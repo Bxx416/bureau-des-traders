@@ -700,11 +700,25 @@ const tag = id => `<b style="color:${id === "directeur" ? "#ffcc4d" : couleur(id
 let majEtat = "verif", majAffiche = 0, majCible = 0, majPas = 100;
 const dMaj = document.getElementById("d-maj"), majBarre = document.getElementById("maj-barre");
 dMaj.addEventListener("cancel", e => e.preventDefault()); // Échap ne contourne pas la question
-(function portrait() {
-  const cv = document.getElementById("maj-portrait"), c = cv.getContext("2d");
+const cP = document.getElementById("maj-portrait").getContext("2d");
+let tPortrait = 0;
+function portrait(tape) { // tape : le Directeur tape sur son portable pendant la mise à jour
+  cP.clearRect(0, 0, 20, 20);
   const { rows, pal } = sprite({ ...dir, dos: false, activite: null, etat: "debout", anim: 0 }, 200); // t=200 : yeux ouverts
-  rows.slice(0, cv.height).forEach((r, y) => [...r].forEach((k, x) => { if (k !== ".") { c.fillStyle = pal[k]; c.fillRect(x, y, 1, 1); } }));
-})();
+  rows.slice(0, tape ? 14 : 20).forEach((r, y) => [...r].forEach((k, x) => { if (k !== ".") { cP.fillStyle = pal[k]; cP.fillRect(x + 2, y, 1, 1); } }));
+  if (!tape) return;
+  const t = tPortrait, g = t % 2;
+  cP.fillStyle = `rgba(89,195,255,${0.1 + 0.1 * g})`; cP.fillRect(3, 3, 14, 10); // lueur de l'écran sur le visage
+  cP.fillStyle = "#6b4a2e"; cP.fillRect(0, 18, 20, 2);                          // bureau
+  cP.fillStyle = "#2b2840"; cP.fillRect(5, 12, 10, 6);                          // dos du portable
+  cP.fillStyle = "#4a4570"; cP.fillRect(5, 12, 10, 1);
+  cP.fillStyle = "#ffcc4d"; cP.fillRect(9, 14, 2, 2);                           // logo
+  cP.fillStyle = pal.C; cP.fillRect(2, 13, 3, 5); cP.fillRect(15, 13, 3, 5);    // bras
+  cP.fillStyle = pal.S; cP.fillRect(4, g ? 16 : 17, 2, 1); cP.fillRect(14, g ? 17 : 16, 2, 1); // mains qui tapent
+  if (t % 3 === 0) { cP.fillStyle = "#fff"; cP.fillRect(5 + (t * 7) % 10, 11, 1, 1); } // petite étincelle de frappe
+}
+portrait(false);
+setInterval(() => { if (majEtat === "maj") { tPortrait++; portrait(true); } }, 140);
 setInterval(() => { // la barre avance doucement pendant une étape, sans jamais dépasser la suivante
   if (majEtat !== "maj") return;
   majAffiche = Math.max(majAffiche, majCible);
@@ -730,6 +744,7 @@ function majUI(m) {
   } else if (m.etat === "maj") {
     texte.textContent = m.texte || "Mise à jour en cours…"; liste.replaceChildren(); majCible = m.pct;
   }
+  portrait(m.etat === "maj");
   if (m.etat !== "pret") { if (!dMaj.open) dMaj.showModal(); occupe(enMission); return; }
   if (avant === "pret") return;
   const ouvrir = () => {
@@ -743,7 +758,11 @@ function majUI(m) {
 }
 async function repondreMaj(oui) {
   document.getElementById("maj-choix").hidden = true;
-  if (oui) { majEtat = "maj"; majAffiche = majCible = 0; barre(0); majBarre.hidden = false; }
+  if (oui) {
+    majEtat = "maj"; majAffiche = majCible = 0; barre(0); majBarre.hidden = false; portrait(true);
+    document.getElementById("maj-liste").replaceChildren();
+    document.getElementById("maj-texte").textContent = "C'est parti, je m'en occupe…";
+  }
   await fetch("/api/maj", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ oui }) }).catch(() => {});
 }
 document.getElementById("maj-oui").onclick = () => repondreMaj(true);

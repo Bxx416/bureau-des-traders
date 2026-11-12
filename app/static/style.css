@@ -49,9 +49,10 @@ input { width: 100%; padding: 8px; font-family: var(--pixel); font-size: 10px; t
 dialog { background: var(--panneau); color: var(--texte); border: 4px solid var(--or); max-width: min(760px, 92vw); padding: 16px; }
 dialog::backdrop { background: #000a; }
 dialog h2 { font-size: 11px; color: var(--or); }
+[hidden] { display: none !important; } /* sinon .ligne (flex) garde les boutons visibles */
 #d-maj { width: min(460px, 92vw); }
 .maj-tete { display: flex; gap: 14px; align-items: center; }
-#maj-portrait { width: 64px; height: 80px; image-rendering: pixelated; background: #0e0c1a; border: 2px solid var(--bord); flex: none; }
+#maj-portrait { width: 80px; height: 80px; image-rendering: pixelated; background: #0e0c1a; border: 2px solid var(--bord); flex: none; }
 #maj-texte { margin: 6px 0 0; }
 #maj-liste { margin: 10px 0; padding-left: 22px; color: var(--bleu); }
 #maj-liste:empty { display: none; }
