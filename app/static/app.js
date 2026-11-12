@@ -490,7 +490,7 @@ function dire(a, texte, genre = "", duree = 4500) {
 function placerHTML(now) {
   for (const a of Object.values(agents)) {
     const e = etiquettes[a.id], [ex, ey] = a.bureau.etiquette; e.textContent = a.nom.toUpperCase();
-    Object.assign(e.style, { left: ex * S + "px", top: ey * S + "px", fontSize: S * 2.2 + "px" });
+    Object.assign(e.style, { left: ex * S + "px", top: ey * S + "px", fontSize: S * 2.7 + "px" });
   }
   for (const q of plaques) Object.assign(q.p.style, { left: q.x * S + "px", top: q.y * S + "px", fontSize: S * 2 + "px" });
   Object.assign(etiquetteDetente.style, { left: 196 * S + "px", top: 260 * S + "px", fontSize: S * 2.2 + "px" });
@@ -498,8 +498,8 @@ function placerHTML(now) {
   for (let i = bulles.length - 1; i >= 0; i--) {
     const b = bulles[i];
     if (now > b.fin) { b.e.style.opacity = 0; if (now > b.fin + 400) { b.e.remove(); bulles.splice(i, 1); } continue; }
-    b.e.style.fontSize = S * 3.6 + "px"; b.e.style.maxWidth = S * 64 + "px";
-    const bx = Math.min(Math.max((b.a.x + PW / 2) * S, S * 34), W * S - S * 34);
+    b.e.style.fontSize = Math.max(19, S * 5.6) + "px"; b.e.style.maxWidth = Math.max(260, S * 90) + "px";
+    const bx = Math.min(Math.max((b.a.x + PW / 2) * S, S * 47), W * S - S * 47);
     b.e.style.left = bx + "px"; b.e.style.top = Math.max((b.a.y - 3) * S, S * 16) + "px";
   }
 }
@@ -600,7 +600,7 @@ const TELE = [
 ];
 let finFete = 0;
 
-function libre(a) { return a.etat === "assis" && !a.chemin.length && !a.travail && !a.activite && (a.id !== "directeur" || !enMission); }
+function libre(a) { return a.etat === "assis" && !a.chemin.length && !a.travail && !a.activite && (a.id !== "directeur" || (!enMission && !feteAvantOuverture)); }
 function arreter(a) { a.activite = null; a.parle = false; a.place = null; a.jeton = (a.jeton || 0) + 1; }
 const placeLibre = noms => noms.find(n => !Object.values(agents).some(b => b.place === n));
 // Lance une activité : f reçoit un test « toujours d'actualité ? » et libère l'agent à la fin.
@@ -672,6 +672,21 @@ setInterval(() => {
   else if (r < 0.9) cafe(a);
   else sieste(a);
 }, 2500);
+// Avant l'ouverture du bureau (vérification et mises à jour) : toute l'équipe, sauf le Directeur, fait la fête.
+const GRANDE_PISTE = [...[216, 236, 256, 276, 296, 316, 336].map(x => [x, 200]), ...[226, 246, 266, 286, 306, 326].map(x => [x, 214])];
+let feteAvantOuverture = false;
+function feteMaj() {
+  if (feteAvantOuverture) return;
+  feteAvantOuverture = true; finFete = Infinity; // pas de fête au hasard par-dessus
+  const d = agents.directeur; if (d.activite) { arreter(d); rentrer(d); } // il reste à son bureau pour les mises à jour
+  Object.values(agents).filter(a => a.id !== "directeur").forEach((a, i) => activite(a, "fete", async ok => {
+    await trajet(a, DETENTE, ...GRANDE_PISTE[i % GRANDE_PISTE.length]); if (!ok()) return;
+    const phrases = ["Le chef met à jour, on fait la fête ! 🎉", "Wouhou !", "Allez, on danse !", "Le DJ, c'est moi !", "Pause pendant l'installation !"];
+    if (Math.random() < 0.5) dire(a, hasard(phrases), "", 2500);
+    while (ok() && feteAvantOuverture) { await pause(3000); if (ok() && Math.random() < 0.15) dire(a, hasard(phrases), "", 2500); }
+  }));
+}
+function finFeteMaj() { if (feteAvantOuverture) { feteAvantOuverture = false; rappeler(); finFete = performance.now(); } }
 // Une mission arrive : tout le monde arrête sa pause et retourne à son bureau.
 function rappeler() {
   finFete = 0;
@@ -745,10 +760,11 @@ function majUI(m) {
     texte.textContent = m.texte || "Mise à jour en cours…"; liste.replaceChildren(); majCible = m.pct;
   }
   portrait(m.etat === "maj");
-  if (m.etat !== "pret") { if (!dMaj.open) dMaj.showModal(); occupe(enMission); return; }
+  if (m.etat !== "pret") { feteMaj(); if (!dMaj.open) dMaj.showModal(); occupe(enMission); return; }
   if (avant === "pret") return;
   const ouvrir = () => {
     if (dMaj.open) dMaj.close();
+    finFeteMaj(); // chacun retourne à son bureau
     occupe(enMission);
     const msg = avant === "verif" ? "Tout est à jour. Au travail, l'équipe !" : `${m.texte || "C'est prêt."} Au travail, l'équipe !`;
     noter(`${tag("directeur")} ${esc(msg)}`, m.texte && /échoué/.test(m.texte) ? "ko" : "ok");
