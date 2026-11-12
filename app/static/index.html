@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bureau des Traders</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>▣ BUREAU DES TRADERS</h1>
+  <div id="statut">● prêt</div>
+</header>
+<main>
+  <section id="scene">
+    <div id="cadre">
+      <canvas id="c" width="400" height="250"></canvas>
+      <div id="calque"></div>
+    </div>
+  </section>
+  <aside>
+    <div class="bloc">
+      <h2>MISSIONS DU DIRECTEUR</h2>
+      <button data-m="matin">☀ Préparer la journée<small>horloge · scan des graphiques · news · Congrès</small></button>
+      <button data-m="web">🌐 Idées du web<small>Yahoo · StockTwits · Reddit → signal frais → 10 000 replays → ticket</small></button>
+      <button data-m="cassure">⚡ Chasser une cassure<small>scan d'ouverture → entrée → stop → 10 000 replays → taille → risque → ticket</small></button>
+      <div class="ligne">
+        <input id="ticker" placeholder="TSLA" maxlength="10" aria-label="Ticker">
+        <button data-m="action">🔍 Étudier une action</button>
+      </div>
+      <button data-m="surveiller">🔔 Vérifier les alertes</button>
+      <button id="btn-reglages" class="petit">⚙ Réglages (budget, pertes max, SEC)</button>
+    </div>
+    <div class="bloc journal-bloc">
+      <h2>JOURNAL</h2>
+      <div id="journal" aria-live="polite"></div>
+    </div>
+    <p class="avert">Outil d'aide, pas un conseil financier. Aucun ordre n'est envoyé : le Courtier prépare seulement le ticket, c'est toi qui décides chez ton courtier.</p>
+  </aside>
+</main>
+
+<dialog id="d-agent">
+  <h2 id="d-titre"></h2>
+  <p id="d-role"></p>
+  <pre id="d-sortie"></pre>
+  <form method="dialog"><button>Fermer</button></form>
+</dialog>
+
+<dialog id="d-reglages">
+  <h2>⚙ RÉGLAGES</h2>
+  <form id="f-reglages">
+    <label>Budget ($)<input name="budget" type="number" min="0" step="1"></label>
+    <label>Perte max par trade ($)<input name="max_loss_per_trade_usd" type="number" min="0" step="1"></label>
+    <label>Perte max par jour ($)<input name="max_daily_loss_usd" type="number" min="0" step="1"></label>
+    <label>Trades max par jour<input name="max_trades_per_day" type="number" min="1" step="1"></label>
+    <label>Gain/risque minimum<input name="min_reward_risk" type="number" min="0" step="0.1"></label>
+    <label>Identité SEC (nom + e-mail, pour l'Analyste)<input name="sec_user_agent" placeholder="Prénom Nom toi@exemple.com"></label>
+    <div class="ligne"><button type="submit">Enregistrer</button><button type="button" id="annuler">Annuler</button></div>
+  </form>
+</dialog>
+<dialog id="d-maj" aria-labelledby="maj-titre">
+  <div class="maj-tete">
+    <canvas id="maj-portrait" width="16" height="20" aria-hidden="true"></canvas>
+    <div>
+      <h2 id="maj-titre">LE DIRECTEUR</h2>
+      <p id="maj-texte" aria-live="polite">Je vérifie les mises à jour…</p>
+    </div>
+  </div>
+  <ul id="maj-liste"></ul>
+  <div id="maj-barre" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div></div></div>
+  <div class="ligne" id="maj-choix" hidden><button type="button" id="maj-oui">Oui, mettre à jour</button><button type="button" id="maj-non">Non, pas maintenant</button></div>
+</dialog>
+<script src="app.js"></script>
+</body>
+</html>

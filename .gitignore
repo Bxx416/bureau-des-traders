@@ -1,0 +1,14 @@
+# environnement et profil de la fenêtre (cookies) : propres à ce PC
+app/.venv/
+app/.fenetre/
+__pycache__/
+*.log
+
+# données personnelles de trading (budget, ordres, watchlist) : recréées au lancement
+trader/
+
+# fichiers locaux
+*.exe
+ecran-20s.html
+etat-du-travail/
+graphify-out/
