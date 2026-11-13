@@ -753,7 +753,8 @@ function majUI(m) {
   if (m.etat === "verif") {
     texte.textContent = "Un instant, je vérifie les mises à jour avant d'ouvrir le bureau…"; liste.replaceChildren();
   } else if (m.etat === "propose") {
-    texte.textContent = "J'ai trouvé des mises à jour. On les installe avant de commencer ?";
+    texte.textContent = avant === "pret" ? "Une nouvelle version du bureau est sortie. On l'installe maintenant ? Pas besoin de fermer l'application."
+                                         : "J'ai trouvé des mises à jour. On les installe avant de commencer ?";
     liste.replaceChildren(...m.liste.map(n => Object.assign(document.createElement("li"), { textContent: n })));
     majPas = 100 / Math.max(1, m.liste.length);
   } else if (m.etat === "maj") {
@@ -792,6 +793,7 @@ function occupe(oui) {
   statut.textContent = oui ? "● mission en cours" : "● prêt"; statut.classList.toggle("occupe", oui);
 }
 const tickerLignes = [];
+let redemarre = false;
 function traiter(ev, anime = true) {
   const a = agents[ev.agent];
   if (ev.type === "mission") {
@@ -833,6 +835,10 @@ function traiter(ev, anime = true) {
     if (/\$\d|RSI|breakout|cassure|PASS|BLOCK|triggered/i.test(ev.text)) { tickerLignes.push(ev.text.trim()); majTableau(tickerLignes); }
   } else if (ev.type === "maj") {
     majUI(ev);
+  } else if (ev.type === "recharger") {
+    location.reload();
+  } else if (ev.type === "redemarre") {
+    redemarre = true;  // le serveur revient dans quelques secondes : on recharge à la reconnexion
   } else if (ev.type === "serveur") {
     noter(`<b style="color:#8a8f98">[serveur]</b> ${esc(ev.text)}`, /error|traceback|exception/i.test(ev.text) ? "ko" : "brut");
   } else if (ev.type === "say") {
@@ -848,12 +854,13 @@ fetch("/api/state").then(r => r.json()).then(st => {
   majUI(st.maj);
   occupe(st.busy);
   remplirReglages(st.config);
+  etatAlpaca(st.alpaca);
   noter(`${tag("directeur")} Bonjour ! Choisis une mission, je répartis le travail.`, "dir");
   dire(dir, "Bonjour ! Choisis une mission →", "dir", 6000);
   const es = new EventSource("/api/events" + (new URLSearchParams(location.search).has("app") ? "?app=1" : ""));
   es.onmessage = m => traiter(JSON.parse(m.data));
   // la vérification a pu finir entre /api/state et la connexion : on relit l'état
-  es.onopen = () => fetch("/api/state").then(r => r.json()).then(s => majUI(s.maj)).catch(() => {});
+  es.onopen = () => redemarre ? location.reload() : fetch("/api/state").then(r => r.json()).then(s => majUI(s.maj)).catch(() => {});
   es.onerror = () => { statut.textContent = "● serveur coupé"; statut.classList.add("occupe"); };
 });
 
@@ -888,5 +895,62 @@ fReg.addEventListener("submit", async e => {
   const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const j = await r.json();
   if (j.error) { alert(j.error); return; }
+  fReg.elements.alpaca_key_id.value = fReg.elements.alpaca_secret.value = "";
+  fetch("/api/state").then(r => r.json()).then(s => etatAlpaca(s.alpaca)).catch(() => {});
   dReg.close(); dire(agents.budget, "Réglages notés !", "ok"); noter(`${tag("budget")} Réglages enregistrés.`, "ok");
 });
+function etatAlpaca(ok) {
+  document.getElementById("alpaca-etat").textContent = ok ? "✓ Clés Alpaca papier enregistrées (sur ce PC seulement)." : "Pas encore de clés Alpaca : l'envoi papier est désactivé.";
+}
+
+// ---------- Envoi au compte papier ----------
+async function envoyer(fingerprint) {
+  const r = await fetch("/api/envoyer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fingerprint }) });
+  return r.json();
+}
+document.getElementById("btn-envoyer").onclick = async () => {
+  const t = await envoyer("");
+  if (t.error) { dire(agents.broker, t.error, "ko"); noter(`${tag("broker")} ${esc(t.error)}`, "ko"); return; }
+  if (!confirm(`Envoyer au compte PAPIER Alpaca (argent fictif) ?\n\n${t.plain}\nPerte max au stop : ${t.max_loss ?? "?"} $`)) {
+    noter(`${tag("broker")} Envoi annulé, rien n'est parti.`, "ko"); return;
+  }
+  const j = await envoyer(t.fingerprint);
+  if (j.error) { dire(agents.broker, j.error, "ko"); noter(`${tag("broker")} ${esc(j.error)}`, "ko"); return; }
+  dire(agents.broker, "Ordre papier envoyé !", "ok");
+};
+
+// ---------- Bandeau des cours ----------
+async function majCours() {
+  const c = await fetch("/api/cours").then(r => r.json()).catch(() => null);
+  if (!Array.isArray(c) || !c.length) return;  // on garde l'ancien affichage
+  const html = c.map(x => {
+    const v = Number(x.var), p = Number(x.prix);
+    const sens = v >= 0 ? "monte" : "baisse";
+    const prix = p.toLocaleString("fr-FR", { maximumFractionDigits: p < 10 ? 4 : 2 });
+    return `<span><b>${esc(x.nom)}</b> ${prix} <span class="${sens}">${v >= 0 ? "▲ +" : "▼ "}${v.toFixed(2)} %</span></span>`;
+  }).join("");
+  document.getElementById("defile").innerHTML = html + html;  // deux copies : la boucle ne saute pas
+}
+majCours(); setInterval(majCours, 60000);
+
+// ---------- Bilan du test papier ----------
+const OBJECTIF_TRADES = 100;
+document.getElementById("btn-bilan").onclick = async () => {
+  const b = await fetch("/api/bilan").then(r => r.json()).catch(() => ({ error: "Serveur injoignable." }));
+  const signe = v => `${v > 0 ? "+" : ""}${v} $`;
+  const l = b.error ? [b.error] : [
+    `Trades fermés : ${b.trades} / ${OBJECTIF_TRADES}` + (b.trades < OBJECTIF_TRADES ? `  (encore ${OBJECTIF_TRADES - b.trades} avant de juger)` : "  ✓ assez pour juger"),
+    `Jours de trading : ${b.jours}`,
+    `Gagnants : ${b.gagnants} (${b.trades ? Math.round(100 * b.gagnants / b.trades) : 0} %)`,
+    `Gain moyen par trade : ${signe(b.moyen)}` + (b.moyen_R != null ? `  (${b.moyen_R} R)` : ""),
+    `Gain total : ${signe(b.total)}`,
+    `Meilleur : ${signe(b.meilleur)}  ·  Pire : ${signe(b.pire)}`,
+    `Pire série de pertes : ${b.pire_serie} d'affilée`,
+    `Compte papier : ${b.equity} $  ·  Positions ouvertes : ${b.ouvertes}`,
+    "", "Derniers trades :", ...(b.derniers.length ? b.derniers.map(t => `  ${t.date}  ${t.symbol.padEnd(6)} ${signe(t.pnl)}`) : ["  aucun pour l'instant"]),
+  ];
+  document.getElementById("d-titre").textContent = "📊 BILAN DU TEST PAPIER";
+  document.getElementById("d-role").textContent = `Ce qui compte : le gain moyen par trade sur au moins ${OBJECTIF_TRADES} trades, pas le résultat d'une journée. 1 R = ta perte max par trade.`;
+  document.getElementById("d-sortie").textContent = l.join("\n");
+  document.getElementById("d-agent").showModal();
+};

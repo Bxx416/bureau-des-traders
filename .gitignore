@@ -10,5 +10,7 @@ trader/
 # fichiers locaux
 *.exe
 ecran-20s.html
+dist/
+installer/.installe
 etat-du-travail/
 graphify-out/

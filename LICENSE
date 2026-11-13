@@ -1,0 +1,35 @@
+Bureau des Traders
+Copyright (c) 2026 Bxx416. Tous droits réservés.
+
+1. Utilisation autorisée
+   Toute personne qui a reçu ce logiciel de l'auteur peut l'installer et l'utiliser
+   gratuitement, sur ses propres ordinateurs, pour un usage personnel et non commercial.
+
+2. Ce qui n'est pas autorisé sans l'accord écrit de l'auteur
+   - copier, diffuser, publier ou donner le logiciel à d'autres personnes ;
+   - le vendre, le louer ou l'utiliser pour fournir un service à des tiers ;
+   - le modifier, le décompiler ou en réutiliser le code, les images ou les textes
+     dans un autre projet.
+
+3. Aucune garantie
+   Le logiciel est fourni « tel quel », sans garantie d'aucune sorte, notamment de
+   bon fonctionnement, d'exactitude des données ou d'adéquation à un usage particulier.
+   L'auteur n'est pas responsable des dommages, pertes financières ou manques à gagner
+   liés à son utilisation.
+
+4. Pas un conseil en investissement
+   Le logiciel est un outil d'aide et d'apprentissage. Il ne fournit aucun conseil
+   en investissement personnalisé, au sens de la directive MiFID II. Chaque utilisateur
+   reste seul responsable de ses décisions et de ses ordres, qu'il valide lui-même
+   chez son courtier. Les résultats passés ou simulés ne préjugent pas des résultats
+   futurs. Le trading peut entraîner la perte de tout le capital engagé.
+
+5. Éléments tiers
+   Le dossier « skills » contient les scripts d'agents trader-* de Jake Schincariol
+   (https://github.com/Jakeschincariol/day-trader-skill), sous licence MIT : voir
+   skills/LICENSE. Ils ne sont pas couverts par la présente licence ; les restrictions
+   du point 2 ne s'y appliquent pas. Python, uv et pywebview sont installés depuis leurs sources
+   officielles et restent soumis à leurs propres licences.
+
+6. Droit applicable
+   La présente licence est soumise au droit français.
