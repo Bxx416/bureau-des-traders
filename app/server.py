@@ -6,359 +6,41 @@ Le Courtier prépare le ticket ; il n'est envoyé (compte PAPIER Alpaca uniqueme
 """
 import json, os, queue, re, shutil, subprocess, sys, threading, time, webbrowser
 import urllib.error, urllib.parse, urllib.request
-from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # C:\Users\benja\Trading
+import envois
+from contexte import (AGENTS, ARRET, CONFIG, EDITABLE, GLOBAL, MARCHES, ROOT, SECRETS, VersJournal, arret_urgence, busy, clients, clients_lock, config_marche, config_racine, dossier, dry_run, fenetres, history, load_config, marche, pousse, say)
+from orchestrateur import (missions, run_mission)
+from courtier import (alpaca_ok, bilan, envoyer_ticket, gardien_cloture, journal_envois, reconcilier)
+
 STATIC = Path(__file__).resolve().parent / "static"
-SKILLS = ROOT / "skills"   # copie des scripts trader-* : l'app marche sans Claude Code installé
-TRADER = ROOT / "trader"
-CONFIG = TRADER / "config.json"
+
 CODE = __import__("hashlib").sha1(Path(__file__).read_bytes()).hexdigest()[:12]   # version du code chargé
+
 PORT = int(os.environ.get("BDT_PORT", 8765))   # autre port : pour tester une 2e copie à côté
-
-AGENTS = {
-    "directeur":  ("Directeur", None),
-    "scanner":    ("Scanner", "trader-scanner/scan.py"),
-    "news":       ("Journaliste", "trader-news/news.py"),
-    "entry":      ("Guetteur", "trader-entry/entry.py"),
-    "exit":       ("Stratège", "trader-exit/exit.py"),
-    "timemachine":("Voyageur", "trader-timemachine/timemachine.py"),
-    "budget":     ("Comptable", "trader-budget/size.py"),
-    "risk":       ("Gardien", "trader-risk/check.py"),
-    "broker":     ("Courtier", "trader-broker/ticket.py"),
-    "alerts":     ("Sentinelle", "trader-alerts/alerts.py"),
-    "analyst":    ("Analyste", "trader-analyst/facts.py"),
-    "pelosi":     ("Espion", "trader-pelosi/ptr.py"),
-    "fouineuse":  ("Fouineuse", str(ROOT / "app" / "agents" / "idees.py")),
-    "crieur":     ("Crieur", str(ROOT / "app" / "agents" / "idees.py")),
-}
-
-def web_ideas():
-    doc = json.loads((TRADER / "idees.json").read_text(encoding="utf-8"))
-    return [i["symbol"] for i in doc.get("classement", [])]
-
-TRIGGERED = re.compile(r"^\s*([A-Z][A-Z.\-]{0,9})\s+triggered\b")
-
-TRIGGER_TIME = re.compile(r"triggered\s+(\d{1,2}):(\d{2})\s*([AP]M)")
-LATE = re.compile(r"That was (\d+) minutes ago")
-MAX_AGE_MIN = 30      # au-delà, l'entrée est périmée : le prix et les chances ont bougé
-MAX_CANDIDATES = 6
-
-def recent_triggers(lines):
-    """Tickers « triggered », du déclenchement le plus récent au plus ancien."""
-    found = []
-    for line in lines:
-        m, t = TRIGGERED.match(line), TRIGGER_TIME.search(line)
-        if m and t:
-            h, mi, ap = int(t.group(1)) % 12, int(t.group(2)), t.group(3)
-            found.append(((h + (12 if ap == "PM" else 0)) * 60 + mi, m.group(1)))
-    return [s for _, s in sorted(found, reverse=True)]
-
-def favorable(tm):
-    """Le trade n'est gardé que si les rejeux ET l'historique sont du bon côté."""
-    mc, h = tm.get("mc") or {}, tm.get("history") or {}
-    if (mc.get("avg_R") or 0) <= 0 or mc.get("p_target", 0) <= mc.get("p_stop", 1):
-        return False
-    return h.get("triggered", 0) < 5 or (h.get("avg_R") or 0) > 0
-
-# Chaque mission = liste d'étapes (agent, arguments, phrase du directeur).
-# shortcut: les missions sont figées ici, à rendre éditables si tu veux en créer d'autres.
-def missions(symbol):
-    s = (symbol or "").upper().strip()
-    return {
-        "matin": [
-            ("alerts", ["clock"], "Sentinelle, la bourse est ouverte ?"),
-            ("scanner", ["daily", "--show", "15"], "Scanner, trouve-moi les graphiques intéressants !"),
-            ("news", ["--watchlist", "trader/watchlist.json", "--no-sec", "--hours", "16"], "Journaliste, des nouvelles sur ces actions ?"),
-            ("pelosi", ["new", "--dry-run"], "Espion, le Congrès a acheté quoi ?"),
-        ],
-        "cassure": [
-            ("alerts", ["clock"], "Sentinelle, quelle heure à New York ?"),
-            ("scanner", ["orb", "--show", "15"], "Scanner, quelles actions cassent leur range d'ouverture ?"),
-            ("entry", ["watchlist"], "Guetteur, laquelle déclenche une entrée ?"),
-            ("selection", None, ""),
-            ("budget", ["--write"], "Comptable, combien d'actions avec notre budget ?"),
-            ("risk", [], "Gardien, ça respecte nos règles ?"),
-            ("broker", ["show"], "Courtier, prépare le ticket (sans l'envoyer)."),
-        ],
-        "action": [
-            ("news", ["--tickers", s, "--no-sec", "--hours", "24"], f"Journaliste, quoi de neuf sur {s} ?"),
-            ("analyst", [s], f"Analyste, les derniers résultats de {s} ?"),
-            ("selection", [s], ""),
-            ("budget", ["--write"], "Comptable, taille de la position ?"),
-            ("risk", [], "Gardien, vérification des règles."),
-            ("broker", ["show"], "Courtier, le ticket pour validation humaine."),
-        ],
-        "web": [
-            ("alerts", ["clock"], "Sentinelle, la bourse est ouverte ?"),
-            ("fouineuse", ["yahoo"], "Fouineuse, qu'est-ce qui bouge sur Yahoo ?"),
-            ("crieur", ["foule"], "Crieur, de quoi parlent les traders en ligne ?"),
-            ("selection", web_ideas, ""),
-            ("budget", ["--write"], "Comptable, combien d'actions ?"),
-            ("risk", [], "Gardien, ça respecte nos règles ?"),
-            ("broker", ["show"], "Courtier, prépare le ticket (sans l'envoyer)."),
-        ],
-        "surveiller": [
-            ("alerts", ["check"], "Sentinelle, une alerte a sonné ?"),
-        ],
-    }
-
-clients, clients_lock = [], threading.Lock()
-fenetres = []  # connexions venant de la fenêtre du bureau (?app=1) : elles seules la gardent allumée
-busy = threading.Lock()
-history = []          # derniers événements, pour un navigateur qui se reconnecte
-
-def emit(ev):
-    history.append(ev)
-    del history[:-300]
-    data = json.dumps(ev, ensure_ascii=False)
-    with clients_lock:
-        for q in clients:
-            q.put(data)
-
-class VersJournal:
-    """Sans fenêtre noire (pythonw), les messages du serveur vont dans le journal du bureau et dans app/serveur.log."""
-    def __init__(self):
-        self.buf, self.f = "", open(ROOT / "app" / "serveur.log", "w", encoding="utf-8")
-    def write(self, t):
-        self.f.write(t); self.f.flush()
-        *lignes, self.buf = (self.buf + t).split("\n")
-        for l in lignes:
-            if l.strip():
-                emit({"type": "serveur", "text": l})
-        return len(t)
-    def flush(self):
-        pass
 
 if sys.stdout is None:
     sys.stdout = sys.stderr = VersJournal()
 
-def run_agent(agent, args):
-    script = SKILLS / AGENTS[agent][1]
-    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-    p = subprocess.Popen([sys.executable, str(script), *args], cwd=ROOT, env=env,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         encoding="utf-8", errors="replace",
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    lines = []
-    for line in p.stdout:
-        line = line.rstrip()
-        lines.append(line)
-        emit({"type": "line", "agent": agent, "text": line})
-    try:
-        code = p.wait(timeout=1800)
-    except subprocess.TimeoutExpired:
-        p.kill(); code = -1
-    return code, lines
-
-# Du plus parlant au moins parlant : la bulle montre la première ligne qui correspond.
-PRIORITY = [re.compile(p, re.I) for p in (
-    r"^Leans|^Favou?rs|coin flip|^Verdict",
-    r"\b(WAITING|TRIGGERED|EXPIRED|PASS|BLOCK|READY)\b",
-    r"vs yesterday|matched|NYSE|refus",
-    r"Wrote")]
-NOISE = re.compile(r"financial advice|^Next:|^A scan is|^usage:|not a list of stocks", re.I)
-PLAN = re.compile(r"^(Entry|Stop|Target)\s+(\$[\d.,]+)")
-
-def summary(lines):
-    useful = [l.strip() for l in lines if l.strip() and not NOISE.search(l)]
-    plan = dict(m.groups() for m in map(PLAN.match, useful) if m)
-    if len(plan) == 3:
-        return f"Entrée {plan['Entry']} · Stop {plan['Stop']} · Objectif {plan['Target']}"
-    for pat in PRIORITY:
-        for l in useful:
-            if pat.search(l):
-                return l[:180]
-    return useful[-1][:180] if useful else "(rien à dire)"
-
-def say(text):
-    emit({"type": "say", "agent": "directeur", "text": text})
-
-def step(agent, args, order):
-    emit({"type": "order", "agent": agent, "text": order})
-    emit({"type": "step", "agent": agent, "status": "start", "cmd": " ".join([AGENTS[agent][1], *args])})
-    code, lines = run_agent(agent, args)
-    emit({"type": "step", "agent": agent, "status": "done" if code == 0 else "fail",
-          "code": code, "summary": summary(lines)})
-    return code, lines
-
-def select_trade(candidates):
-    """Teste chaque candidat (entrée récente → plan à 1R → 10 000 rejeux) et garde le premier favorable."""
-    for sym in candidates[:MAX_CANDIDATES]:
-        code, lines = step("entry", ["check", sym, "--setup", "orb", "--write"], f"Guetteur, {sym} : le signal est encore frais ?")
-        late = next((int(m.group(1)) for m in map(LATE.search, lines) if m), 0)
-        if code != 0 or not any("TRIGGERED" in l for l in lines):
-            say(f"{sym} : pas de signal, au suivant."); continue
-        if late > MAX_AGE_MIN:
-            say(f"{sym} : signal vieux de {late} min, trop tard. Au suivant."); continue
-        # Objectif à 1R : plus proche, donc atteint plus souvent (gain plus petit).
-        if step("exit", ["plan", "--target", "1R", "--write"], "Stratège, stop et objectif proche (1R).")[0] != 0:
-            continue
-        if step("timemachine", ["run", "--write"], "Voyageur, rejoue-le 10 000 fois.")[0] != 0:
-            continue
-        tm = json.loads((TRADER / "timemachine.json").read_text(encoding="utf-8"))
-        if favorable(tm):
-            say(f"{sym} : les chances sont de notre côté. On le prépare.")
-            return True
-        mc, h = tm.get("mc") or {}, tm.get("history") or {}
-        say(f"{sym} : défavorable (rejeux {mc.get('avg_R', 0):+.2f}R, objectif {mc.get('p_target', 0):.0%} contre stop "
-            f"{mc.get('p_stop', 0):.0%} ; historique {h.get('target', 0)} gagnés / {h.get('stop', 0)} perdus). On passe.")
-    say("Aucun trade favorable : aujourd'hui on ne trade pas. Ne rien faire, c'est aussi gagner.")
-    return False
-
-def run_mission(name, symbol):
-    steps = missions(symbol).get(name)
-    if not steps:
-        return
-    emit({"type": "mission", "status": "start", "name": name, "symbol": symbol})
-    ok, lines = True, []
-    for agent, args, order in steps:
-        if agent == "analyst" and not sec_ready():
-            say("Pas d'identité SEC dans ⚙ : l'Analyste saute son tour.")
-            continue
-        if agent == "selection":
-            cands = args() if callable(args) else args or recent_triggers(lines)
-            if not select_trade(cands):
-                ok = False
-                break
-            continue
-        code, lines = step(agent, args, order)
-        if code != 0:
-            say(f"On s'arrête là : {summary(lines)}")
-            ok = False
-            break
-    emit({"type": "mission", "status": "end", "name": name, "ok": ok})
-
-def sec_ready():
-    ua = load_config().get("sec_user_agent", "")
-    return "@" in ua and "example.com" not in ua
-
-def load_config():
-    if not CONFIG.exists():
-        TRADER.mkdir(exist_ok=True)
-        cfg = json.loads((SKILLS / "trader-budget" / "config.example.json").read_text(encoding="utf-8"))
-        cfg["sec_user_agent"] = ""
-        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    return json.loads(CONFIG.read_text(encoding="utf-8"))
-
-EDITABLE = {"budget": float, "max_loss_per_trade_usd": float, "max_daily_loss_usd": float,
-            "max_trades_per_day": int, "min_reward_risk": float, "sec_user_agent": str}
-SECRETS = ("alpaca_key_id", "alpaca_secret")   # jamais renvoyées au navigateur
-
-# ---------- Compte papier Alpaca ----------
-# Papier seulement : passer au réel se fera à la main, exprès, pas par un réglage.
-ALPACA = "https://paper-api.alpaca.markets"
-DERNIERE_ENTREE_NY = (11, 0)   # 11h New York = 17h Paris : après, plus de nouvelle entrée
-CLOTURE_AVANT_S = 600          # 10 min avant la clôture, tout est fermé
-
-def alpaca_ok():
-    cfg = load_config()
-    return all(cfg.get(k) for k in SECRETS)
-
-def alpaca(method, path, body=None):
-    cfg = load_config()
-    req = urllib.request.Request(ALPACA + path, method=method,
-                                 data=None if body is None else json.dumps(body).encode(),
-                                 headers={"APCA-API-KEY-ID": cfg.get("alpaca_key_id", ""),
-                                          "APCA-API-SECRET-KEY": cfg.get("alpaca_secret", ""),
-                                          "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read() or b"null")
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Alpaca {e.code} : {e.read().decode(errors='replace')[:200]}") from None
-
-def ticket_cmd(*args):
-    """ticket.py sans écrire dans le journal (sortie JSON)."""
-    p = subprocess.run([sys.executable, str(SKILLS / AGENTS["broker"][1]), *args], cwd=ROOT,
-                       capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       env=dict(os.environ, PYTHONUTF8="1"),
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return p.returncode, p.stdout + p.stderr
-
-def vers_alpaca(ti):
-    """Arguments du ticket (noms du MCP place_stock_order) → corps de POST /v2/orders."""
-    o = {k: v for k, v in ti.items() if not k.startswith(("take_profit_", "stop_loss_"))}
-    if "take_profit_limit_price" in ti:
-        o["take_profit"] = {"limit_price": ti["take_profit_limit_price"]}
-    if "stop_loss_stop_price" in ti:
-        o["stop_loss"] = {"stop_price": ti["stop_loss_stop_price"],
-                          **({"limit_price": ti["stop_loss_limit_price"]} if "stop_loss_limit_price" in ti else {})}
-    return o
-
-assert vers_alpaca({"symbol": "X", "qty": "2", "take_profit_limit_price": "11", "stop_loss_stop_price": "9"}) == \
-    {"symbol": "X", "qty": "2", "take_profit": {"limit_price": "11"}, "stop_loss": {"stop_price": "9"}}
-
-def envoyer_ticket(fingerprint):
-    """Envoie le ticket n°1 au compte papier. Renvoie (code HTTP, réponse)."""
-    if not alpaca_ok():
-        return 400, {"error": "Ajoute tes clés Alpaca PAPIER dans ⚙ Réglages."}
-    code, out = ticket_cmd("show", "--index", "1", "--json")
-    try:
-        t = json.loads(out)
-    except json.JSONDecodeError:
-        return 409, {"error": "Pas de ticket prêt : lance d'abord une mission."}
-    if not t.get("ready"):
-        return 409, {"error": f"Ticket pas prêt : {t.get('status')}"}
-    if time.time() - (TRADER / "orders.json").stat().st_mtime > MAX_AGE_MIN * 60:
-        return 409, {"error": f"Ticket vieux de plus de {MAX_AGE_MIN} min : relance une mission."}
-    if not fingerprint:   # 1er appel : on montre le ticket, le navigateur demande confirmation
-        return 200, {"plain": t["plain"], "max_loss": t["max_loss"], "fingerprint": t["fingerprint"]}
-    if fingerprint != t["fingerprint"]:
-        return 409, {"error": "Le ticket a changé entre-temps, revérifie-le."}
-    ti = t["tool_input"]
-    c = alpaca("GET", "/v2/clock")
-    ny = datetime.fromisoformat(c["timestamp"])
-    if not c["is_open"]:
-        return 409, {"error": "La Bourse de New York est fermée."}
-    if ti.get("side") == "buy" and (ny.hour, ny.minute) >= DERNIERE_ENTREE_NY:
-        return 409, {"error": "Plus de nouvelle entrée après 17h (heure de Paris)."}
-    code, out = ticket_cmd("approve", "--index", "1", "--reply", "yes")
-    if code != 0:
-        return 409, {"error": out.strip()[-200:]}
-    try:
-        o = alpaca("POST", "/v2/orders", vers_alpaca(ti))
-    except (RuntimeError, OSError) as e:
-        ticket_cmd("result", "--index", "1", "--status", "failed", "--note", str(e)[:200])
-        return 502, {"error": str(e)}
-    ticket_cmd("result", "--index", "1", "--status", "placed", "--broker-id", o["id"])
-    say(f"Courtier : ordre envoyé au compte PAPIER ({t['plain']}).")
-    return 200, {"ok": True, "id": o["id"]}
-
-def gardien_cloture():
-    """10 min avant la clôture, ferme tout sur le compte papier : rien ne reste ouvert la nuit."""
-    fait = None
-    while True:
-        time.sleep(60)
-        if not alpaca_ok():
-            continue
-        try:
-            c = alpaca("GET", "/v2/clock")
-            now, close = datetime.fromisoformat(c["timestamp"]), datetime.fromisoformat(c["next_close"])
-            if c["is_open"] and (close - now).total_seconds() < CLOTURE_AVANT_S and fait != now.date():
-                if alpaca("GET", "/v2/positions"):
-                    alpaca("DELETE", "/v2/positions?cancel_orders=true")
-                    say("Courtier : la clôture approche, je ferme toutes les positions du compte papier.")
-                fait = now.date()
-        except (RuntimeError, OSError, KeyError, ValueError) as e:
-            print("Clôture papier :", e)
-
 # ---------- Nom d'entreprise → ticker ----------
-BOURSES_US = {"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX"}   # Nasdaq, NYSE, NYSE American, NYSE Arca (pas l'OTC)
+BOURSES = {"US": {"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX"},   # Nasdaq, NYSE, NYSE American, NYSE Arca (pas l'OTC)
+           "PA": {"PAR"}}                                       # Euronext Paris
+
 TICKER_OK = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 
 def vers_ticker(texte):
-    """« nvidia » → NVDA : 1re action cotée à New York selon la recherche Yahoo. None si aucune."""
+    """« nvidia » → NVDA, « lvmh » → MC.PA : 1re action de la Bourse active selon la recherche Yahoo. None si aucune."""
     from agents.idees import get
     try:
         d = get("https://query2.finance.yahoo.com/v1/finance/search?quotesCount=10&newsCount=0&q="
                 + urllib.parse.quote(texte))
         t = next((q["symbol"] for q in d.get("quotes", [])
-                  if q.get("quoteType") == "EQUITY" and q.get("exchange") in BOURSES_US), None)
+                  if q.get("quoteType") == "EQUITY" and q.get("exchange") in BOURSES[marche()]), None)
     except (OSError, ValueError, KeyError):
         t = texte.upper()   # Yahoo injoignable : on tente tel quel
+    if t and marche() == "PA" and not t.endswith(".PA"):
+        t = None   # une action de New York tapée en mode Paris
     return t if t and TICKER_OK.match(t) else None
 
 # ---------- Bandeau des cours ----------
@@ -367,6 +49,7 @@ COURS = [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^DJI", "Dow Jones"), ("^FC
          ("BTC-USD", "Bitcoin"), ("ETH-USD", "Ethereum"), ("SOL-USD", "Solana"),
          ("GC=F", "Or"), ("CL=F", "Pétrole"), ("EURUSD=X", "EUR/USD"),
          ("NVDA", "Nvidia"), ("AAPL", "Apple"), ("MSFT", "Microsoft"), ("TSLA", "Tesla"), ("AMZN", "Amazon"), ("META", "Meta")]
+
 cours_cache = {"t": 0.0, "data": []}
 
 def cours():
@@ -389,57 +72,10 @@ def cours():
     cours_cache.update(t=time.time(), data=data)
     return data
 
-# ---------- Bilan du test papier ----------
-def trades_fermes(fills):
-    """Exécutions Alpaca → trades fermés : un trade se ferme quand la position de l'action revient à zéro (achats FIFO)."""
-    pos, trades = {}, []
-    for f in sorted(fills, key=lambda f: f["transaction_time"]):
-        s = pos.setdefault(f["symbol"], {"lots": [], "pnl": 0.0})
-        qty, px = float(f["qty"]), float(f["price"])
-        if f["side"] == "buy":
-            s["lots"].append([qty, px])
-            continue
-        while qty > 1e-9 and s["lots"]:
-            lot = s["lots"][0]
-            n = min(qty, lot[0])
-            s["pnl"] += n * (px - lot[1]); lot[0] -= n; qty -= n
-            if lot[0] < 1e-9:
-                s["lots"].pop(0)
-        if not s["lots"]:
-            trades.append({"date": f["transaction_time"][:10], "symbol": f["symbol"], "pnl": round(s["pnl"], 2)})
-            s["pnl"] = 0.0
-    return trades
-
-def _f(t, side, qty, px): return {"transaction_time": t, "symbol": "X", "side": side, "qty": qty, "price": px}
-assert trades_fermes([_f("1", "buy", "10", "5"), _f("2", "sell", "4", "6"), _f("3", "sell", "6", "4.5"),
-                      _f("4", "buy", "2", "3")]) == [{"date": "3", "symbol": "X", "pnl": 1.0}]
-
-def bilan():
-    fills, token = [], None
-    while True:   # 100 exécutions par page
-        page = alpaca("GET", "/v2/account/activities/FILL?direction=asc&page_size=100" + (f"&page_token={token}" if token else ""))
-        fills += page
-        if len(page) < 100:
-            break
-        token = page[-1]["id"]
-    trades = trades_fermes(fills)
-    pnls = [t["pnl"] for t in trades]
-    serie = pire_serie = 0
-    for p in pnls:
-        serie = serie + 1 if p < 0 else 0
-        pire_serie = max(pire_serie, serie)
-    n, risque = len(pnls), load_config().get("max_loss_per_trade_usd") or 0
-    compte = alpaca("GET", "/v2/account")
-    return {"trades": n, "gagnants": sum(p > 0 for p in pnls), "total": round(sum(pnls), 2),
-            "moyen": round(sum(pnls) / n, 2) if n else 0,
-            "moyen_R": round(sum(pnls) / n / risque, 2) if n and risque else None,
-            "meilleur": max(pnls, default=0), "pire": min(pnls, default=0), "pire_serie": pire_serie,
-            "jours": len({t["date"] for t in trades}), "equity": round(float(compte["equity"]), 2),
-            "ouvertes": len(alpaca("GET", "/v2/positions")), "derniers": trades[-10:][::-1]}
-
 # ---------- Mises à jour au lancement ----------
 # etat : verif -> propose (attend oui/non) -> maj -> pret ; les missions ne partent qu'à « pret ».
 maj = {"etat": "verif", "liste": [], "pct": 0, "texte": ""}
+
 UV = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv.exe")
 
 def sh(cmd, timeout=60):
@@ -475,6 +111,7 @@ def cherche_maj():
 
 # ---------- Nouvelle version du bureau ----------
 DEPOT = "Bxx416/bureau-des-traders"   # les versions sont publiées dans ses Releases GitHub
+
 redemarrage = threading.Event()
 
 def version_locale():
@@ -526,12 +163,6 @@ def installe_zip(url):
 
 def empreinte_serveur():
     return (ROOT / "app" / "server.py").read_bytes()
-
-def pousse(ev):
-    """Événement direct aux fenêtres ouvertes, hors historique (pas rejoué au rechargement)."""
-    with clients_lock:
-        for q in clients:
-            q.put(json.dumps(ev, ensure_ascii=False))
 
 def redemarrer():
     """Le code du serveur a changé : un nouveau serveur prend la place de celui-ci, la fenêtre revient seule."""
@@ -636,8 +267,6 @@ class Handler(SimpleHTTPRequestHandler):
             except (OSError, ValueError, KeyError, IndexError) as e:
                 return self.send_json({"error": str(e)}, 502)
         if self.path == "/api/bilan":
-            if not alpaca_ok():
-                return self.send_json({"error": "Ajoute tes clés Alpaca PAPIER dans ⚙ Réglages."}, 400)
             try:
                 return self.send_json(bilan())
             except (RuntimeError, OSError, KeyError, ValueError) as e:
@@ -648,7 +277,8 @@ class Handler(SimpleHTTPRequestHandler):
                                    "maj": {**{k: v for k, v in maj.items() if k != "liste"},
                                            "liste": [x["nom"] for x in maj["liste"]]},
                                    "config": {k: load_config().get(k) for k in EDITABLE},
-                                   "alpaca": alpaca_ok(), "code": CODE})
+                                   "alpaca": alpaca_ok(), "code": CODE, "arret": arret_urgence(),
+                                   "dry_run": dry_run(), "inconnus": len(envois.bloquants(journal_envois())), "marche": marche(), "marches": MARCHES})
         return super().do_GET()
 
     def do_POST(self):
@@ -680,11 +310,15 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"error": "Donne un ticker ou un nom, ex. TSLA ou Tesla"}, 400)
                 saisi, symbol = symbol, vers_ticker(symbol)
                 if not symbol:
-                    return self.send_json({"error": f"« {saisi} » : aucune action cotée à New York trouvée."}, 400)
+                    return self.send_json({"error": f"« {saisi} » : aucune action cotée à {MARCHES[marche()]} trouvée."}, 400)
                 if symbol != saisi.upper():
                     say(f"« {saisi} », c'est le ticker {symbol}.")
             if name not in missions(symbol):
                 return self.send_json({"error": "mission inconnue"}, 400)
+            if name != "surveiller" and arret_urgence():
+                return self.send_json({"error": "Arrêt d'urgence actif."}, 423)
+            if name != "surveiller" and envois.bloquants(journal_envois()):
+                return self.send_json({"error": "Un envoi est dans un état inconnu : réconcilie-le d'abord."}, 409)
             if not busy.acquire(blocking=False):
                 return self.send_json({"error": "Le Directeur est déjà sur une mission"}, 409)
             def job():
@@ -695,23 +329,52 @@ class Handler(SimpleHTTPRequestHandler):
             threading.Thread(target=job, daemon=True).start()
             return self.send_json({"ok": True})
         if self.path == "/api/config":
-            cfg = load_config()
+            if "marche" in body and body["marche"] not in MARCHES:
+                return self.send_json({"error": "place inconnue"}, 400)
+            if body.get("marche", marche()) != marche() and busy.locked():
+                return self.send_json({"error": "Attends la fin de la mission pour changer de Bourse."}, 409)
+            m = marche()
+            racine = config_racine()
+            regles = racine if m == "US" else config_marche(m)
             for k, cast in EDITABLE.items():
-                if k in body:
+                if k in body and str(body[k]).strip() != "":
                     try:
-                        cfg[k] = cast(body[k])
+                        (racine if k in GLOBAL else regles)[k] = cast(body[k])
                     except (TypeError, ValueError):
                         return self.send_json({"error": f"valeur invalide pour {k}"}, 400)
             for k in SECRETS:   # champ vide = on garde la clé déjà enregistrée
                 if str(body.get(k) or "").strip():
-                    cfg[k] = str(body[k]).strip()
-            CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    racine[k] = str(body[k]).strip()
+            if m != "US":
+                (dossier(m) / "config.json").write_text(json.dumps(regles, indent=2, ensure_ascii=False), encoding="utf-8")
+            if "marche" in body:   # après les règles : elles vont à la place qu'on quitte
+                racine["marche"] = body["marche"]
+            CONFIG.write_text(json.dumps(racine, indent=2, ensure_ascii=False), encoding="utf-8")
+            if "marche" in body and body["marche"] != m:
+                config_marche(body["marche"])
+                say(f"On passe à la Bourse de {MARCHES[body['marche']]}.")
             return self.send_json({"ok": True})
         if self.path == "/api/redemarrer":   # un lancement plus récent demande la place
             if busy.locked() or maj["etat"] == "maj":
                 return self.send_json({"error": "occupé"}, 409)
             threading.Thread(target=redemarrer, daemon=True).start()
             return self.send_json({"ok": True})
+        if self.path == "/api/arret":   # arrêt d'urgence : effet immédiat, même pendant une mission
+            if body.get("actif"):
+                ARRET.write_text(envois.maintenant(), encoding="utf-8")
+                say("ARRÊT D'URGENCE : plus aucune mission de trading ni aucun envoi.")
+            elif ARRET.exists():
+                ARRET.unlink()
+                say("Arrêt d'urgence levé.")
+            return self.send_json({"ok": True, "arret": arret_urgence()})
+        if self.path == "/api/reconcilier":
+            if not busy.acquire(blocking=False):
+                return self.send_json({"error": "Le Directeur est occupé."}, 409)
+            try:
+                reste = reconcilier()
+            finally:
+                busy.release()
+            return self.send_json({"ok": not reste, "inconnus": [r["cle"] for r in reste]})
         if self.path == "/api/envoyer":
             if not busy.acquire(blocking=False):
                 return self.send_json({"error": "Le Directeur est occupé, réessaie après la mission."}, 409)

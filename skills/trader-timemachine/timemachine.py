@@ -77,6 +77,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from marche import to_eastern, eastern_to_utc, NYSE_EARLY_CLOSE  # noqa: E402  calendrier et fuseau de la place (Bureau des Traders)
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
@@ -96,11 +98,6 @@ STRONG = 0.15
 MANY_NEITHER = 0.40
 EPOCH = datetime.datetime(1970, 1, 1)
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-NYSE_EARLY_CLOSE = {  # 1:00 p.m. ET, from https://www.nyse.com/markets/hours-calendars (read 2026-10-13)
-    "2026-11-27": "day after Thanksgiving",
-    "2026-12-24": "Christmas Eve",
-    "2027-11-26": "day after Thanksgiving",
-}
 EARLY_MIN = 13 * 60
 
 
@@ -109,35 +106,6 @@ class TMError(Exception):
 
 
 # ---------------------------------------------------------------- time (copied from trader-alerts)
-
-def _nth_sunday(year, month, n):
-    d = datetime.date(year, month, 1)
-    d += datetime.timedelta(days=(6 - d.weekday()) % 7)
-    return d + datetime.timedelta(weeks=n - 1)
-
-
-def eastern_offset(utc):
-    """Hours from UTC for New York: -4 in daylight time, -5 otherwise.
-    DST runs from 2:00 a.m. on the second Sunday of March to 2:00 a.m. on the
-    first Sunday of November (US rule since 2007)."""
-    y = utc.year
-    start = datetime.datetime.combine(_nth_sunday(y, 3, 2), datetime.time(7, 0))   # 2:00 EST
-    end = datetime.datetime.combine(_nth_sunday(y, 11, 1), datetime.time(6, 0))    # 2:00 EDT
-    naive = utc.replace(tzinfo=None)
-    return -4 if start <= naive < end else -5
-
-
-def to_eastern(utc):
-    return utc.replace(tzinfo=None) + datetime.timedelta(hours=eastern_offset(utc))
-
-
-def eastern_to_utc(local):
-    for off in (-4, -5):
-        utc = local - datetime.timedelta(hours=off)
-        if eastern_offset(utc) == off:
-            return utc
-    return local + datetime.timedelta(hours=5)
-
 
 def parse_now(text):
     """ISO time -> naive UTC. A time without an offset is taken as New York time."""
@@ -187,7 +155,7 @@ def clock24(minutes):
 
 def chart_url(sym, host="query2"):
     return "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=60d&interval=5m" % (
-        host, urllib.parse.quote(sym.upper().replace(".", "-")))
+        host, urllib.parse.quote(marche.yahoo(sym)))
 
 
 def _sleep(seconds):
@@ -282,14 +250,23 @@ def parse_bars(result, now_utc):
     rmt = meta.get("regularMarketTime")
     if isinstance(rmt, (int, float)) and utc_of(rmt) < as_of:
         as_of = utc_of(rmt)
-    dropped = {"no_price": 0, "off_grid": 0, "not_complete": 0, "outside_hours": 0}
+    dropped = {"no_price": 0, "off_grid": 0, "not_complete": 0, "outside_hours": 0, "incoherent": 0, "duplicate": 0}
     bars = {}
     for i, ts in enumerate(stamps):
         o, h, l, c, v = [col[i] if i < len(col) else None for col in cols]
         if ts is None or None in (o, h, l, c):
             dropped["no_price"] += 1
             continue
+        # Bureau des Traders (contrôle des données) : prix ≤ 0, plus-haut/plus-bas incohérents ou volume négatif
+        # = bougie écartée ; sa séance devient incomplète et ne sert ni aux rejeux ni à l'historique.
+        tol = 1e-6 * c
+        if min(o, h, l, c) <= 0 or h < max(o, c, l) - tol or l > min(o, c) + tol or (v or 0) < 0:
+            dropped["incoherent"] += 1
+            continue
         ts = int(ts)
+        if ts in bars:
+            dropped["duplicate"] += 1
+            continue
         if ts % INTERVAL:
             dropped["off_grid"] += 1
             continue
@@ -346,8 +323,35 @@ def pct(a, q):
     return a[min(len(a) - 1, int(q * len(a)))]
 
 
+def sortie(o, h, l, stop, target, long):
+    """(issue, prix d'exécution) d'une bougie, ou None. Bureau des Traders : une ouverture déjà au-delà du stop
+    sort à ce prix d'ouverture (gap, perte > 1R) ; stop et objectif dans la même bougie : le stop (prudent) ;
+    l'objectif, ordre à cours limité, sort au prix de l'objectif même si l'ouverture est meilleure."""
+    if long:
+        if o <= stop:
+            return "stop", o
+        if l <= stop:
+            return "stop", stop
+        if h >= target:
+            return "target", target
+    else:
+        if o >= stop:
+            return "stop", o
+        if h >= stop:
+            return "stop", stop
+        if l <= target:
+            return "target", target
+    return None
+
+
+def r_de(fill, prix, risk, long):
+    return ((prix - fill) if long else (fill - prix)) / risk
+
+
 def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=2, side="buy"):
-    """Monte Carlo replays of bars k+1..last. Same draws and order as the reel's sim.py."""
+    """Monte Carlo replays of bars k+1..last. Same draws and order as the reel's sim.py.
+    Bureau des Traders : l'ordre au marché part après la clôture de la bougie de signal, donc l'achat se fait à
+    l'ouverture de la bougie suivante ; R reste mesuré sur le risque prévu (entrée du plan − stop)."""
     long = side == "buy"
     risk = (entry - stop) if long else (stop - entry)
     r_target = round(((target - entry) if long else (entry - target)) / risk, 4)
@@ -357,38 +361,33 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
 
     rng = random.Random(seed)
     choice = rng.choice
-    outcomes, closes, paths = [], [], []
+    outcomes, closes, paths, Rs, fills = [], [], [], [], []
     for n in range(replays):
         p = entry
-        outcome = None
+        outcome, fill, rx = None, None, None
         keep = n < SAMPLE_PATHS
         path = [entry]
         for i in range(k + 1, last + 1):
             o, h, l, c = choice(pool[slot(rng, i)])
-            hi, lo, cl = p * h, p * l, p * c
+            op, hi, lo, cl = p * o, p * h, p * l, p * c
+            if fill is None:
+                fill = op
             if outcome is None:
-                if long:
-                    if lo <= stop:
-                        outcome = "stop"        # both inside one bar: count the loss (conservative)
-                    elif hi >= target:
-                        outcome = "target"
-                else:
-                    if hi >= stop:
-                        outcome = "stop"
-                    elif lo <= target:
-                        outcome = "target"
+                x = sortie(op, hi, lo, stop, target, long)
+                if x:
+                    outcome, rx = x[0], r_de(fill, x[1], risk, long)
             p = cl
             if keep:
                 path.append(round(p, 2))
         outcomes.append(outcome or "close")
         closes.append(p)
+        fills.append(fill)
+        Rs.append(rx if outcome else r_de(fill, p, risk, long))
         if keep:
             paths.append(path)
     cnt = {x: outcomes.count(x) for x in ("target", "stop", "close")}
-    green = sum(1 for o, p in zip(outcomes, closes)
-                if o == "target" or (o == "close" and (p > entry if long else p < entry)))
-    Rs = [r_target if o == "target" else -1.0 if o == "stop" else ((p - entry) if long else (entry - p)) / risk
-          for o, p in zip(outcomes, closes)]
+    green = sum(1 for o, p, f in zip(outcomes, closes, fills)
+                if o == "target" or (o == "close" and (p > f if long else p < f)))
     srt = sorted(closes)
     # percentile bands per bar for the fan chart: a second run of 2,000 paths, same seed
     rng = random.Random(seed)
@@ -457,7 +456,8 @@ def history_replay(sessions, rule, last, side="buy"):
     trades = []
     for d, D in sessions:
         oh, ol = opening_range(D, n)
-        kk = next((i for i in range(n, last + 1) if (D[i]["c"] > oh if long else D[i]["c"] < ol)), None)
+        # pas de signal sur la dernière bougie : l'achat, à l'ouverture suivante, n'aurait plus le temps de vivre
+        kk = next((i for i in range(n, last) if (D[i]["c"] > oh if long else D[i]["c"] < ol)), None)
         if kk is None:
             continue
         e = round(D[kk]["c"], 2)
@@ -466,19 +466,16 @@ def history_replay(sessions, rule, last, side="buy"):
         if risk <= 0:
             continue
         t = round(e + rule["target_r"] * risk, 2) if long else round(e - rule["target_r"] * risk, 2)
-        oc = None
+        fill = D[kk + 1]["o"]   # Bureau des Traders : ordre au marché, exécuté à l'ouverture suivante
+        oc, px = None, D[last]["c"]
         for b in D[kk + 1:last + 1]:
-            if (b["l"] <= s) if long else (b["h"] >= s):
-                oc = "stop"
+            x = sortie(b["o"], b["h"], b["l"], s, t, long)
+            if x:
+                oc, px = x
                 break
-            if (b["h"] >= t) if long else (b["l"] <= t):
-                oc = "target"
-                break
-        cl = D[last]["c"]
-        R = ((t - e) if long else (e - t)) / risk if oc == "target" else -1.0 if oc == "stop" else \
-            ((cl - e) if long else (e - cl)) / risk
-        trades.append({"date": d, "time": clock12(OPEN_MIN + 5 * (kk + 1)), "entry": e, "stop": s, "target": t,
-                       "outcome": oc or "close", "R": round(R, 2)})
+        trades.append({"date": d, "time": clock12(OPEN_MIN + 5 * (kk + 1)), "entry": e, "fill": round(fill, 4),
+                       "stop": s, "target": t, "exit": round(px, 4), "outcome": oc or "close",
+                       "R": round(r_de(fill, px, risk, long), 2)})
     return {
         "sessions": len(sessions), "triggered": len(trades),
         "target": sum(1 for x in trades if x["outcome"] == "target"),
@@ -686,7 +683,7 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     result = chart_result(text, sym)
     meta, bars, dropped = parse_bars(result, now_utc)
     msym = str(meta.get("symbol") or "").upper()
-    if msym and msym != sym.replace(".", "-"):
+    if msym and msym != marche.yahoo(sym):
         raise TMError("the data is for %s but the plan is for %s" % (msym, sym))
     gran = meta.get("dataGranularity")
     if gran and gran != "5m":
@@ -950,6 +947,10 @@ def main(argv=None):
     except TMError as e:
         print("timemachine.py: %s" % e, file=sys.stderr)
         return 1
+
+
+import marche  # noqa: E402  place boursière (Bureau des Traders)
+marche.applique(globals())
 
 
 if __name__ == "__main__":

@@ -14,7 +14,10 @@
   <div class="haut-droite">
     <div id="statut">● prêt</div>
     <span class="info" tabindex="0" aria-describedby="info-texte">i<span id="info-texte" role="tooltip">Outil d'aide, pas un conseil financier. Aucun ordre ne part sans ton clic, et seulement vers un compte PAPIER (argent fictif). Les positions papier sont fermées 10 min avant la clôture.</span></span>
-    <button id="btn-reglages" class="petit" title="Budget, pertes max, SEC, clés Alpaca">⚙ Réglages</button>
+    <select id="marche" class="petit" aria-label="Bourse" title="Bourse sur laquelle l'équipe travaille">
+      <option value="US">🇺🇸 New York</option><option value="PA">🇫🇷 Paris</option>
+    </select>
+    <button id="btn-reglages" class="petit" title="Budget, pertes max, SEC, courtiers papier">⚙ Réglages</button>
   </div>
 </header>
 <div id="bandeau" aria-label="Cours des marchés (Yahoo, mis à jour chaque minute)" title="Variation du jour · Yahoo Finance, peut être différé de 15 min"><div id="defile"></div></div>
@@ -42,8 +45,9 @@
         <button data-m="action">🔍 Étudier une action</button>
       </div>
       <button data-m="surveiller">🔔 Vérifier les alertes</button>
-      <button id="btn-envoyer">📤 Envoyer le ticket au compte PAPIER<small>Alpaca, argent fictif · confirmation demandée · pas d'entrée après 17h</small></button>
+      <button id="btn-envoyer">📤 Envoyer le ticket au compte PAPIER<small><span class="courtier">Alpaca</span>, argent fictif · confirmation demandée · pas d'entrée après 17h</small></button>
       <button id="btn-bilan" class="petit">📊 Bilan du test papier</button>
+      <button id="btn-arret" class="petit" title="Bloque toute mission de trading et tout envoi">🛑 Arrêt d'urgence</button>
     </div>
   </aside>
 </main>
@@ -58,15 +62,18 @@
 <dialog id="d-reglages">
   <h2>⚙ RÉGLAGES</h2>
   <form id="f-reglages">
-    <label>Budget ($)<input name="budget" type="number" min="0" step="1"></label>
-    <label>Perte max par trade ($)<input name="max_loss_per_trade_usd" type="number" min="0" step="1"></label>
-    <label>Perte max par jour ($)<input name="max_daily_loss_usd" type="number" min="0" step="1"></label>
+    <p class="avert">Règles de la Bourse de <b class="ville">New York</b> (chaque Bourse a les siennes).</p>
+    <label>Budget (<span class="dev">$</span>)<input name="budget" type="number" min="0" step="1"></label>
+    <label>Perte max par trade (<span class="dev">$</span>)<input name="max_loss_per_trade_usd" type="number" min="0" step="1"></label>
+    <label>Perte max par jour (<span class="dev">$</span>)<input name="max_daily_loss_usd" type="number" min="0" step="1"></label>
     <label>Trades max par jour<input name="max_trades_per_day" type="number" min="1" step="1"></label>
     <label>Gain/risque minimum<input name="min_reward_risk" type="number" min="0" step="0.1"></label>
     <label>Identité SEC (nom + e-mail, pour l'Analyste)<input name="sec_user_agent" placeholder="Prénom Nom toi@exemple.com"></label>
     <label>Clé Alpaca PAPIER (API Key ID)<input name="alpaca_key_id" type="password" autocomplete="off" placeholder="vide = inchangée"></label>
     <label>Secret Alpaca PAPIER<input name="alpaca_secret" type="password" autocomplete="off" placeholder="vide = inchangé"></label>
     <p id="alpaca-etat" class="avert"></p>
+    <label>Port IB Gateway PAPIER (Paris : 4002 Gateway, 7497 TWS)<input name="ibkr_port" type="number" min="1" max="65535" step="1" placeholder="4002"></label>
+    <p class="avert">Paris passe par Interactive Brokers : ouvre IB Gateway en « Paper Trading » et active l'API. Rien d'autre à saisir ici, la connexion se fait dans IB Gateway.</p>
     <div class="ligne"><button type="submit">Enregistrer</button><button type="button" id="annuler">Annuler</button></div>
   </form>
 </dialog>

@@ -1062,6 +1062,7 @@ fetch("/api/state").then(r => r.json()).then(st => {
   occupe(st.busy);
   remplirReglages(st.config);
   etatAlpaca(st.alpaca);
+  afficherMarche(st.marche, st.marches);
   noter(`${tag("directeur")} Bonjour ! Choisis une mission, je répartis le travail.`, "dir");
   dire(dir, "Bonjour ! Choisis une mission →", "dir", 6000);
   const es = new EventSource("/api/events" + (new URLSearchParams(location.search).has("app") ? "?app=1" : ""));
@@ -1106,6 +1107,28 @@ fReg.addEventListener("submit", async e => {
   fetch("/api/state").then(r => r.json()).then(s => etatAlpaca(s.alpaca)).catch(() => {});
   dReg.close(); dire(agents.budget, "Réglages notés !", "ok"); noter(`${tag("budget")} Réglages enregistrés.`, "ok");
 });
+// ---------- Bourse active ----------
+const selMarche = document.getElementById("marche");
+let devise = "$";
+function afficherMarche(m, villes) {
+  const pa = m === "PA";
+  selMarche.value = m; devise = pa ? "€" : "$";
+  document.querySelectorAll(".dev").forEach(e => e.textContent = devise);
+  document.querySelectorAll(".ville").forEach(e => e.textContent = (villes || {})[m] || m);
+  document.querySelectorAll(".courtier").forEach(e => e.textContent = pa ? "Interactive Brokers" : "Alpaca");
+  document.querySelector('[data-m="web"]').hidden = pa;   // Yahoo/StockTwits/Reddit : actions US seulement
+  document.querySelector('[data-m="matin"] small').textContent = pa ? "horloge · scan des graphiques · news" : "horloge · scan des graphiques · news · Congrès";
+  document.getElementById("ticker").placeholder = pa ? "LVMH" : "TSLA";
+  document.getElementById("ticker").title = pa ? "Ticker (MC.PA) ou nom (LVMH)" : "Ticker (NVDA) ou nom (Nvidia)";
+}
+selMarche.addEventListener("change", async () => {
+  const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marche: selMarche.value }) });
+  const j = await r.json();
+  const s = await fetch("/api/state").then(r => r.json());
+  if (j.error) { dire(dir, j.error, "ko"); noter(esc(j.error), "ko"); }
+  remplirReglages(s.config); afficherMarche(s.marche, s.marches);
+});
+
 function etatAlpaca(ok) {
   document.getElementById("alpaca-etat").textContent = ok ? "✓ Clés Alpaca papier enregistrées (sur ce PC seulement)." : "Pas encore de clés Alpaca : l'envoi papier est désactivé.";
 }
@@ -1118,13 +1141,25 @@ async function envoyer(fingerprint) {
 document.getElementById("btn-envoyer").onclick = async () => {
   const t = await envoyer("");
   if (t.error) { dire(agents.broker, t.error, "ko"); noter(`${tag("broker")} ${esc(t.error)}`, "ko"); return; }
-  if (!confirm(`Envoyer au compte PAPIER Alpaca (argent fictif) ?\n\n${t.plain}\nPerte max au stop : ${t.max_loss ?? "?"} $`)) {
+  const courtier = selMarche.value === "PA" ? "Interactive Brokers" : "Alpaca";
+  if (!confirm(`Envoyer au compte PAPIER ${courtier} (argent fictif) ?\n\n${t.plain}\nPerte max au stop : ${t.max_loss ?? "?"} ${devise}`)) {
     noter(`${tag("broker")} Envoi annulé, rien n'est parti.`, "ko"); return;
   }
   const j = await envoyer(t.fingerprint);
   if (j.error) { dire(agents.broker, j.error, "ko"); noter(`${tag("broker")} ${esc(j.error)}`, "ko"); return; }
   dire(agents.broker, "Ordre papier envoyé !", "ok");
 };
+
+// ---------- Arrêt d'urgence ----------
+const btnArret = document.getElementById("btn-arret");
+function etatArret(actif) { btnArret.dataset.actif = actif ? "1" : ""; btnArret.textContent = actif ? "✅ Lever l'arrêt d'urgence" : "🛑 Arrêt d'urgence"; }
+btnArret.onclick = async () => {
+  const actif = !btnArret.dataset.actif;
+  if (!actif && !confirm("Lever l'arrêt d'urgence ? Les missions et les envois papier redeviennent possibles.")) return;
+  const r = await fetch("/api/arret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actif }) }).then(r => r.json());
+  etatArret(r.arret);
+};
+fetch("/api/state").then(r => r.json()).then(s => etatArret(s.arret)).catch(() => {});
 
 // ---------- Bandeau des cours ----------
 async function majCours() {
@@ -1142,9 +1177,29 @@ majCours(); setInterval(majCours, 60000);
 
 // ---------- Bilan du test papier ----------
 const OBJECTIF_TRADES = 100;
+// Historique des opportunités (décisions des agents) + trades papier ventilés. Les rejeux du Voyageur n'y sont pas.
+function analyse(a, signe) {
+  if (!a) return [];
+  const e = a.etats || {};
+  const groupe = (titre, g) => {
+    const k = Object.keys(g || {});
+    return k.length ? ["", titre, ...k.slice(-8).map(x => `  ${x.padEnd(9)} ${String(g[x].trades).padStart(3)} trade(s)  ${signe(g[x].total)}` + (g[x].moyen_R != null ? `  (${g[x].moyen_R} R)` : ""))] : [];
+  };
+  return [
+    "", "Ce que l'équipe a décidé :",
+    `  Actions étudiées : ${a.opportunites}  ·  refusées : ${a.taux_refus == null ? "–" : Math.round(100 * a.taux_refus) + " %"}`,
+    `  Validées : ${e.VALIDATED || 0}  ·  tickets prêts : ${e.TICKET || 0}  ·  envoyées : ${e.ENVOYE || 0}`,
+    `  Données insuffisantes : ${a.donnees_insuffisantes}  ·  erreurs d'envoi : ${a.erreurs_execution ?? 0}`,
+    ...(Object.keys(a.motifs_refus || {}).length ? ["  Motifs de refus :", ...Object.entries(a.motifs_refus).map(([m, n]) => `    ${n} × ${m}`)] : []),
+    ...groupe("Trades papier par semaine :", a.papier?.par_semaine),
+    ...groupe("Par mois :", a.papier?.par_mois),
+    ...groupe("Par heure d'entrée :", a.papier?.par_heure),
+    ...groupe("Par stratégie :", a.papier?.par_strategie),
+  ];
+}
 document.getElementById("btn-bilan").onclick = async () => {
   const b = await fetch("/api/bilan").then(r => r.json()).catch(() => ({ error: "Serveur injoignable." }));
-  const signe = v => `${v > 0 ? "+" : ""}${v} $`;
+  const signe = v => `${v > 0 ? "+" : ""}${v} ${devise}`;
   const l = b.error ? [b.error] : [
     `Trades fermés : ${b.trades} / ${OBJECTIF_TRADES}` + (b.trades < OBJECTIF_TRADES ? `  (encore ${OBJECTIF_TRADES - b.trades} avant de juger)` : "  ✓ assez pour juger"),
     `Jours de trading : ${b.jours}`,
@@ -1153,8 +1208,9 @@ document.getElementById("btn-bilan").onclick = async () => {
     `Gain total : ${signe(b.total)}`,
     `Meilleur : ${signe(b.meilleur)}  ·  Pire : ${signe(b.pire)}`,
     `Pire série de pertes : ${b.pire_serie} d'affilée`,
-    `Compte papier : ${b.equity} $  ·  Positions ouvertes : ${b.ouvertes}`,
+    b.erreur_courtier ? `Courtier papier injoignable : ${b.erreur_courtier}` : `Compte papier : ${b.equity} ${devise}  ·  Positions ouvertes : ${b.ouvertes}`,
     "", "Derniers trades :", ...(b.derniers.length ? b.derniers.map(t => `  ${t.date}  ${t.symbol.padEnd(6)} ${signe(t.pnl)}`) : ["  aucun pour l'instant"]),
+    ...analyse(b.analyse, signe),
   ];
   document.getElementById("d-titre").textContent = "📊 BILAN DU TEST PAPIER";
   document.getElementById("d-role").textContent = `Ce qui compte : le gain moyen par trade sur au moins ${OBJECTIF_TRADES} trades, pas le résultat d'une journée. 1 R = ta perte max par trade.`;

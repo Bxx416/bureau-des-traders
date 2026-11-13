@@ -37,7 +37,7 @@ try {
 
     Write-Host "3/5  Python 3.12 et la fenêtre de l'application (quelques minutes la 1re fois) ..."
     & $uv venv "$dest\app\.venv" --python 3.12 --clear --quiet; Verifie "La création de Python"
-    & $uv pip install --python "$dest\app\.venv\Scripts\python.exe" pywebview --quiet; Verifie "L'installation de pywebview"
+    & $uv pip install --python "$dest\app\.venv\Scripts\python.exe" pywebview ib_async --quiet; Verifie "L'installation de pywebview"
 
     Write-Host "4/5  Création de Bureau des Traders.exe ..."
     cmd /c "`"$dest\app\compiler-exe.bat`"" | Out-Null; Verifie "La création de l'exe"
