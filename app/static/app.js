@@ -71,7 +71,14 @@ const LISTE_SALLES = [...EQUIPES, SALLES.directeur, DETENTE];
 const PLACES = {
   snack: [171, 214], soda: [187, 214], cafe: [203, 216],
   canape0: [232, 232], canape1: [252, 232], canape2: [272, 232], pouf: [310, 226],
+  jeu0: [326, 210], jeu1: [358, 210], arrosage: [182, 236],   // table de jeu · plante en bas à gauche
+  flechettes: [340, 212],                                     // face à la cible du mur
 };
+const partie = { jeu: null };   // table du coin détente : « cartes », « dames », « gateau » ou « flechettes » (place prise)
+const avions = [];              // avions en papier en vol
+const vols = [], flechettes = []; // fléchettes en vol · plantées dans la cible
+const CIBLE = [348, 200];
+let pong = null;                // partie de ping-pong sur la table de réunion
 const PISTE = [[220, 214], [240, 220], [260, 214], [280, 220], [300, 214]];
 
 const agents = {};
@@ -142,7 +149,7 @@ function sprite(a, t) {
     rows[0] = "....RRRRRRRR...."; rows[1] = "..RRRRRRRRRRRR.."; rows[2] = ".RRRRRRRRRRRRRR."; rows[3] = ".YYYYYYYYYYYYYY.";
     pal.R = a.id === "risk" ? "#ffcc4d" : "#2a6ad8"; pal.Y = a.id === "risk" ? "#c8961a" : "#1a4aa0";
   }
-  const dort = a.activite === "sieste" && a.etat === "pouf";
+  const dort = (a.activite === "sieste" && a.etat === "pouf") || a.dort;
   if (dort || Math.floor((t + a.anim * 40) / 180) % 18 === 0) for (const r of [6, 8]) rows[r] = rows[r].replace(/[EW]/g, "S"); // yeux fermés
   if (!dort && Math.floor((t + a.anim * 40) / 180) % 18 === 0) rows[7] = rows[7].replace(/[EW]/g, "S");
   if (a.dos) rows = rows.map((r, i) => i <= 11 ? r.replace(/[SEWKG]/g, "H") : r.replace(/T/g, "C")); // vu de dos
@@ -150,7 +157,8 @@ function sprite(a, t) {
 }
 function dessinerPerso(a, t) {
   const { rows, pal } = sprite(a, t);
-  const rebond = a.activite === "fete" && a.etat === "debout" ? -2 * (Math.floor(t / 10) % 2)
+  const rebond = a.dort ? 3 // tête posée sur le clavier
+    : a.activite === "fete" && a.etat === "debout" ? -2 * (Math.floor(t / 10) % 2)
     : a.activite === "musique" ? Math.floor(t / 12) % 2
     : a.activite === "sieste" ? Math.floor(t / 60) % 2
     : a.travail ? Math.floor(t / 20) % 2
@@ -171,6 +179,34 @@ function dessinerPerso(a, t) {
   if (a.activite === "musique") {
     ctx.fillStyle = "#222"; ctx.fillRect(x0 + 2, y0 - 1, 12, 1); ctx.fillRect(x0 + 1, y0, 1, 5); ctx.fillRect(x0 + 14, y0, 1, 5);
     ctx.fillStyle = "#e0404a"; ctx.fillRect(x0 - 1, y0 + 5, 2, 4); ctx.fillRect(x0 + 15, y0 + 5, 2, 4);
+  }
+  if (a.activite === "jongle" && assise(a)) { // trois balles au-dessus de la tête
+    ["#ff5d9e", "#ffcc4d", "#59c3ff"].forEach((c, i) => {
+      const ang = t / 9 + i * 2.09;
+      ctx.fillStyle = c; ctx.fillRect(x0 + 7 + Math.round(Math.cos(ang) * 7), y0 - 3 - Math.round(Math.abs(Math.sin(ang)) * 7), 2, 2);
+    });
+  }
+  if (a.activite === "rubik" && assise(a)) { // Rubik's cube dans les mains
+    const C = ["#e04a4a", "#5be37d", "#59c3ff", "#ffcc4d", "#fffbe8", "#ff8a3a"];
+    ctx.fillStyle = "#0b0814"; ctx.fillRect(x0 + 11, y0 + 9, 5, 5); // tenu à hauteur du visage, au-dessus du bureau
+    for (let i = 0; i < 9; i++) { ctx.fillStyle = a.resolu ? "#5be37d" : C[(i * 7 + Math.floor(t / 25) * (1 + i)) % 6]; ctx.fillRect(x0 + 12 + (i % 3), y0 + 10 + Math.floor(i / 3), 1, 1); }
+  }
+  if (a.activite === "jeu" && partie.jeu === "cartes" && a.etat === "debout") { // cartes en main
+    ctx.fillStyle = "#fffbe8"; ctx.fillRect(x0 + 5, y0 + 13, 2, 3); ctx.fillRect(x0 + 7, y0 + 12, 2, 3); ctx.fillRect(x0 + 9, y0 + 13, 2, 3);
+    ctx.fillStyle = "#e04a4a"; ctx.fillRect(x0 + 7, y0 + 13, 1, 1);
+  }
+  if (a.activite === "pong" && a.etat === "debout") { // raquette
+    const rx = a.cote < 0 ? x0 + 15 : x0 - 3;
+    ctx.fillStyle = "#c0303a"; ctx.fillRect(rx, y0 + 11, 3, 3); ctx.fillStyle = "#7a5230"; ctx.fillRect(rx + 1, y0 + 14, 1, 2);
+  }
+  if (a.activite === "arrosage" && a.etat === "debout") { // arrosoir
+    ctx.fillStyle = "#3aa85a"; ctx.fillRect(x0 - 2, y0 + 12, 5, 4); ctx.fillRect(x0 - 4, y0 + 11, 2, 1); ctx.fillRect(x0 + 1, y0 + 10, 2, 2);
+  }
+  if (enMission && assise(a) && !a.activite && !a.dos) { // micro-casque pendant les missions
+    ctx.fillStyle = "#2a2a34"; ctx.fillRect(x0 + 2, y0 - 1, 12, 1); ctx.fillRect(x0 + 1, y0, 1, 5); ctx.fillRect(x0 + 14, y0, 1, 5);
+    ctx.fillStyle = "#3a3a48"; ctx.fillRect(x0 - 1, y0 + 5, 2, 4); ctx.fillRect(x0 + 15, y0 + 5, 2, 4);
+    ctx.fillStyle = "#2a2a34"; ctx.fillRect(x0, y0 + 9, 1, 1); ctx.fillRect(x0 + 1, y0 + 10, 3, 1); // tige du micro
+    ctx.fillStyle = a.radio && Math.floor(t / 6) % 2 ? "#5be37d" : "#9a93c4"; ctx.fillRect(x0 + 4, y0 + 10, 2, 1); // micro (vert quand il parle)
   }
   if (a.activite === "fete") {
     const raies = ["#ff5d9e", "#ffcc4d"];
@@ -261,6 +297,24 @@ function mobilierDetente(t) {
     } },
     { base: 252, f: () => { // pouf
       ctx.fillStyle = "#e0a030"; ctx.fillRect(306, 238, 22, 13); ctx.fillStyle = "#f0c050"; ctx.fillRect(308, 238, 18, 3);
+    } },
+    { base: 238, f: () => { // table de jeu (cartes ou dames)
+      ctx.fillStyle = "#5a3a20"; ctx.fillRect(340, 224, 26, 9); ctx.fillStyle = "#7a5230"; ctx.fillRect(341, 224, 24, 7);
+      ctx.fillStyle = "#4a2e18"; ctx.fillRect(342, 233, 2, 5); ctx.fillRect(362, 233, 2, 5);
+      if (partie.jeu === "gateau") { // gâteau d'anniversaire et ses bougies
+        ctx.fillStyle = "#ff9ec0"; ctx.fillRect(345, 218, 16, 7); ctx.fillStyle = "#fffbe8"; ctx.fillRect(345, 218, 16, 2);
+        ctx.fillRect(347, 220, 1, 2); ctx.fillRect(352, 220, 1, 1); ctx.fillRect(357, 220, 1, 2);
+        ctx.fillStyle = "#59c3ff"; [348, 353, 358].forEach(x => ctx.fillRect(x, 214, 1, 4));
+        if (partie.bougies) { ctx.fillStyle = Math.floor(t / 5) % 2 ? "#ffcc4d" : "#ff8a3a"; [348, 353, 358].forEach(x => ctx.fillRect(x, 212, 1, 2)); }
+      } else if (partie.jeu === "dames") {
+        for (let i = 0; i < 6; i++) for (let j = 0; j < 3; j++) { ctx.fillStyle = (i + j) % 2 ? "#f0e0c0" : "#3a2a20"; ctx.fillRect(347 + i * 2, 225 + j * 2, 2, 2); }
+        ctx.fillStyle = "#e04a4a"; ctx.fillRect(348, 225, 1, 1); ctx.fillRect(352, 227, 1, 1);
+        ctx.fillStyle = "#fffbe8"; ctx.fillRect(356, 229, 1, 1); ctx.fillRect(350 + (Math.floor(t / 90) % 3) * 2, 229, 1, 1);
+      } else if (partie.jeu === "cartes") {
+        ctx.fillStyle = "#2a6ad8"; ctx.fillRect(345, 226, 3, 4); ctx.fillRect(358, 226, 3, 4); // pioches
+        ctx.fillStyle = "#fffbe8"; ctx.fillRect(351, 225, 3, 4); ctx.fillRect(353 + (Math.floor(t / 70) % 2), 227, 3, 4);
+        ctx.fillStyle = "#e04a4a"; ctx.fillRect(352, 226, 1, 1);
+      }
     } },
     { base: 262, f: () => plante(320, 244) },
     { base: 262, f: () => plante(378, 244) },
@@ -387,6 +441,17 @@ function decor(t) {
   ctx.fillStyle = "#4a7a6a"; ctx.fillRect(226, 212, 76, 26); ctx.fillStyle = "#5a8a7a"; ctx.fillRect(228, 214, 72, 22); // tapis
   tele(t);
   ctx.fillStyle = "#ffcc4d"; ctx.fillRect(300, 196, 10, 8); ctx.fillStyle = "#ff5d9e"; ctx.fillRect(312, 197, 8, 9); // affiches
+  [[0, 11, "#1a1420"], [1, 9, "#e8dcb0"], [2, 7, "#c0303a"], [3, 5, "#e8dcb0"], [4, 3, "#2a8a3a"], [5, 1, "#c0303a"]].forEach(([d, w, c]) => {
+    ctx.fillStyle = c; ctx.fillRect(CIBLE[0] - 5 + d, CIBLE[1] - 5 + d, w, w); // cible de fléchettes
+  });
+  for (const [fx, fy] of flechettes) { ctx.fillStyle = "#ffcc4d"; ctx.fillRect(fx, fy, 1, 1); ctx.fillStyle = "#59c3ff"; ctx.fillRect(fx, fy + 1, 1, 2); }
+  if (pong) { // ping-pong sur la table de réunion : filet + balle
+    ctx.fillStyle = "#fffbe8"; ctx.fillRect(214, 120, 2, 14); ctx.fillRect(184, 128, 62, 1);
+    if (pong.t0) {
+      const ph = ((performance.now() - pong.t0) / 800) % 2, f = ph % 1, aller = ph < 1;
+      ctx.fillStyle = "#fff"; ctx.fillRect(Math.round(aller ? 186 + f * 56 : 242 - f * 56), Math.round(126 - Math.sin(f * Math.PI) * 9), 2, 2);
+    }
+  }
   if (performance.now() < finFete) {
     const disco = ["#ff5d9e66", "#59c3ff66", "#ffcc4d66", "#5be37d66"];
     PISTE.forEach(([x, y], i) => { ctx.fillStyle = disco[(i + Math.floor(t / 15)) % 4]; ctx.fillRect(x - 2, y + 18, 20, 6); });
@@ -456,6 +521,24 @@ function effets() {
       particules.push({ x: a.x + Math.random() * 16, y: a.y - 12, vx: (Math.random() - 0.5) * 0.6, vy: 0.4 + Math.random() * 0.4, vie: 60, c: NOTES[Math.floor(Math.random() * 4)] });
     if (a.activite === "sieste" && a.etat === "pouf" && Math.random() < 0.02)
       particules.push({ forme: "z", x: a.x + 12, y: a.y - 2, vx: 0.15, vy: -0.25, vie: 60, c: "#cfc8ff" });
+    if (a.activite === "arrosage" && a.etat === "debout" && Math.random() < 0.3) // gouttes de l'arrosoir
+      particules.push({ x: a.x - 3 + Math.random() * 2, y: a.y + 15, vx: -0.15, vy: 0.5, vie: 18, c: "#59c3ff" });
+  }
+  for (const a of Object.values(agents)) if (a.dort && Math.random() < 0.03) // endormi sur le clavier
+    particules.push({ forme: "z", x: a.cx + 6, y: a.haut - 14, vx: 0.15, vy: -0.25, vie: 60, c: "#cfc8ff" });
+  for (let i = vols.length - 1; i >= 0; i--) { // fléchettes en vol
+    const p = vols[i]; p.k += 0.06;
+    const x = Math.round(p.x0 + (p.x1 - p.x0) * p.k), y = Math.round(p.y0 + (p.y1 - p.y0) * p.k - Math.sin(p.k * Math.PI) * 4);
+    ctx.fillStyle = "#ffcc4d"; ctx.fillRect(x, y, 1, 1); ctx.fillStyle = "#59c3ff"; ctx.fillRect(x, y + 1, 1, 2);
+    if (p.k >= 1) { flechettes.push([p.x1, p.y1]); vols.splice(i, 1); }
+  }
+  for (let i = avions.length - 1; i >= 0; i--) { // avions en papier : arc entre deux bureaux
+    const p = avions[i]; p.k += 0.012;
+    const x = Math.round(p.x0 + (p.x1 - p.x0) * p.k), y = Math.round(p.y0 + (p.y1 - p.y0) * p.k - Math.sin(p.k * Math.PI) * 30);
+    const s = p.x1 >= p.x0 ? 1 : -1;
+    ctx.fillStyle = "#0b0814"; ctx.fillRect(x - 3, y + 1, 7, 1);
+    ctx.fillStyle = "#fffbe8"; ctx.fillRect(x - 3, y, 6, 1); ctx.fillRect(x - 2 + (s < 0 ? 1 : 0), y - 1, 4, 1); ctx.fillRect(x + (s > 0 ? 1 : -1), y - 2, 2, 1);
+    if (p.k >= 1) avions.splice(i, 1);
   }
   for (let i = particules.length - 1; i >= 0; i--) {
     const p = particules[i]; p.x += p.vx; p.y += p.vy; p.vie--;
@@ -645,6 +728,117 @@ function discussion(a, b) {
     });
   });
 }
+// À son bureau : avion en papier vers un collègue, jonglage, Rubik's cube.
+const avionPapier = a => activite(a, "avion", async ok => {
+  const cible = hasard(Object.values(agents).filter(b => b !== a && b.etat === "assis"));
+  if (!cible) return;
+  dire(a, hasard(["Attention, avion en papier ! ✈", "Vol AF-1, décollage !", "Livraison express !", "Un mémo pour toi !"]), "", 2200);
+  await pause(700); if (!ok()) return;
+  avions.push({ x0: a.cx, y0: a.haut - 8, x1: cible.cx, y1: cible.haut - 6, k: 0 });
+  await pause(1500);
+  dire(cible, hasard(["Hé ! 😄", "Joli vol !", "Raté, haha !", "Je te le renvoie !", "C'est pour moi ?"]), "", 2200);
+  await pause(1500);
+});
+const aSonBureau = (nom, phrases, duree, fin) => a => activite(a, nom, async ok => {
+  dire(a, hasard(phrases), "", 2500);
+  const t1 = performance.now() + duree;
+  while (ok() && performance.now() < t1) { await pause(3000); if (ok() && Math.random() < 0.3) dire(a, hasard(phrases), "", 2400); }
+  if (ok() && fin) await fin(a);
+});
+const jongler = aSonBureau("jongle", ["Regardez, je jongle ! 🤹", "Trois balles, zéro stress.", "Oups… non, rattrapée !"], 8000);
+const rubik = aSonBureau("rubik", ["Plus qu'une face…", "Hmm, l'algorithme…", "Je bats mon record !"], 9000,
+  async a => { a.resolu = true; dire(a, "Résolu ! 🎉", "ok", 2200); await pause(2200); a.resolu = false; });
+const arroser = a => aLaDetente(a, "arrosage", ["arrosage"], () => ["Elle a soif, la plante 🌱", "Un peu d'eau…", "Elle pousse bien !"], 6000);
+// Partie de cartes ou de dames à la table du coin détente.
+function partieDeJeu(a, b) {
+  if (partie.jeu) return discussion(a, b);
+  const jeu = Math.random() < 0.5 ? "cartes" : "dames";
+  const phrases = jeu === "cartes" ? ["Je pioche…", "Belote !", "Rebelote !", "À toi de jouer.", "Carré d'as ! 😎", "Tu triches ?"]
+                                   : ["Je mange ton pion !", "Dame ! 👑", "Hmm, je réfléchis…", "Pas mal, ce coup.", "Rafle de trois !"];
+  const duree = 15000 + Math.random() * 10000;
+  partie.jeu = jeu;
+  const joueur = (x, place) => activite(x, "jeu", async ok => {
+    x.place = place; await trajet(x, DETENTE, ...PLACES[place]); if (!ok()) return;
+    const fin = performance.now() + duree;   // la partie commence à l'arrivée à la table
+    if (place === "jeu0") dire(x, jeu === "cartes" ? "Une belote ? 🃏" : "Une partie de dames ?", "", 2400);
+    while (ok() && performance.now() < fin) { await pause(3000); if (ok() && Math.random() < 0.4) dire(x, hasard(phrases), "", 2400); }
+    if (ok() && place === "jeu1") { dire(hasard([a, b]), "Gagné ! 🏆", "ok", 2400); await pause(2000); }
+  });
+  Promise.all([joueur(a, "jeu0"), joueur(b, "jeu1")]).finally(() => (partie.jeu = null));
+}
+// Fléchettes : trois lancers sur la cible du mur, face à elle (de dos).
+const jouerFlechettes = a => {
+  if (partie.jeu) return musique(a);
+  partie.jeu = "flechettes";
+  return activite(a, "flechettes", async ok => {
+    a.place = "flechettes"; await trajet(a, DETENTE, ...PLACES.flechettes); if (!ok()) return;
+    a.dos = true; flechettes.length = 0;
+    for (let i = 0; i < 3 && ok(); i++) {
+      await pause(1300); if (!ok()) return;
+      const dx = Math.round((Math.random() - 0.5) * 10), dy = Math.round((Math.random() - 0.5) * 10), d = Math.hypot(dx, dy);
+      vols.push({ x0: a.x + 8, y0: a.y + 4, x1: CIBLE[0] + dx, y1: CIBLE[1] + dy, k: 0 });
+      await pause(700);
+      dire(a, d < 2 ? "Dans le mille ! 🎯" : d < 4 ? hasard(["Pas mal !", "Presque !"]) : hasard(["Raté… pauvre mur.", "C'était un essai !"]), d < 2 ? "ok" : "", 1800);
+    }
+    await pause(1800);
+  }).finally(() => { flechettes.length = 0; a.dos = false; if (partie.jeu === "flechettes") partie.jeu = null; });
+};
+// Ping-pong sur la table de réunion de l'équipe Exécution.
+function pingPong(a, b) {
+  if (pong) return discussion(a, b);
+  const exec = EQUIPES[2], duree = 14000 + Math.random() * 8000; let arrives = 0;
+  pong = { t0: 0 };
+  const joueur = (x, pos, cote) => activite(x, "pong", async ok => {
+    await trajet(x, exec, ...pos); if (!ok()) return;
+    x.cote = cote; if (++arrives === 2) pong.t0 = performance.now();
+    const fin = performance.now() + duree;
+    while (ok() && performance.now() < fin) {
+      await pause(3000);
+      if (ok() && Math.random() < 0.4) dire(x, hasard(["Smash ! 🏓", "Ping !", "Pong !", "Joli revers !", "Balle de match !", "Filet !"]), "", 2000);
+    }
+    if (ok() && cote > 0) dire(hasard([a, b]), "Victoire ! 🏆", "ok", 2200);
+  });
+  Promise.all([joueur(a, [164, 112], -1), joueur(b, [250, 112], 1)]).finally(() => (pong = null));
+}
+// Gâteau d'anniversaire : l'équipe se réunit autour de la table du coin détente.
+const AUTOUR_GATEAU = [[326, 210], [358, 210], [308, 214], [374, 214], [334, 238], [352, 238]];
+let prochainGateau = performance.now() + 120000;
+function anniversaire(groupe) {
+  prochainGateau = performance.now() + 600000;
+  const star = groupe[0];
+  partie.jeu = "gateau"; partie.bougies = true;
+  let arrives = 0, go;
+  const tousLa = new Promise(r => (go = r));
+  setTimeout(() => go(), 25000);                                          // un retardataire ne bloque pas la fête
+  setTimeout(() => { if (partie.jeu === "gateau") partie.jeu = null; }, 60000);
+  dire(groupe[1] || star, `C'est l'anniversaire de ${star.nom || "quelqu'un"} ! 🎂`, "", 3000);
+  Promise.all(groupe.map((a, i) => activite(a, "gateau", async ok => {
+    await trajet(a, DETENTE, ...AUTOUR_GATEAU[i]); if (!ok()) return;
+    if (++arrives === groupe.length) go();
+    await tousLa; if (!ok()) return;
+    await pause(400 * i);
+    if (a !== star) dire(a, hasard(["Joyeux anniversaire ! 🎂", "Bon anniversaire !", "Happy birthday ! 🎉", "Joyeux anniv' !"]), "", 2600);
+    await pause(4000 - 400 * i); if (!ok()) return;
+    if (a === star) {
+      dire(a, "Merci tout le monde ! Je souffle… 🌬", "ok", 2400); await pause(1600);
+      partie.bougies = false;
+      for (let k = 0; k < 40; k++) particules.push({ x: 353, y: 210, vx: (Math.random() - 0.5) * 2, vy: -Math.random() * 1.5, vie: 50, c: hasard(["#ff5d9e", "#59c3ff", "#ffcc4d", "#5be37d"]) });
+    }
+    await pause(2500);
+    if (ok() && Math.random() < 0.6) dire(a, hasard(["Miam ! 😋", "Une part pour moi !", "Trop bon ce gâteau !", "Encore une part ?"]), "", 2200);
+    await pause(4000);
+  }))).finally(() => { if (partie.jeu === "gateau") partie.jeu = null; });
+}
+// Une étape qui dure : l'agent s'endort sur son clavier, le Directeur le réveille au micro.
+async function endormir(a) {
+  a.dort = true; dire(a, hasard(["Zzz… 💤", "Juste… cinq minutes…", "Zzz… bougie verte… zzz"]), "", 2500);
+  await pause(7000);
+  if (!a.dort) return;
+  dir.radio = true; dire(dir, hasard([`Hé ${a.nom || ""}, on se réveille !`, "Debout là-dedans !", "Allô ? Tu dors ?"]), "dir", 2500);
+  await pause(1500); dir.radio = false;
+  a.dort = false; a.debutTravail = performance.now();
+  if (a.travail) dire(a, hasard(["Hein ? Je réfléchissais !", "Pardon chef !", "Je vérifiais l'intérieur de mes paupières…"]), "", 2500);
+}
 function fete(groupe) {
   finFete = performance.now() + 18000;
   groupe.forEach((a, i) => activite(a, "fete", async ok => {
@@ -655,22 +849,33 @@ function fete(groupe) {
 }
 setInterval(() => {
   for (const a of Object.values(agents)) {
-    if (a.travail && Math.random() < 0.15) dire(a, hasard(TRAVAIL[a.id]), "", 2500);
+    if (a.travail && !a.dort && Math.random() < 0.15) dire(a, hasard(TRAVAIL[a.id]), "", 2500);
+    if (a.travail && !a.dort && a.id !== "directeur" && performance.now() - (a.debutTravail || Infinity) > 25000 && Math.random() < 0.06) endormir(a);
+    if (!a.travail && a.dort) a.dort = false;
     // filet de sécurité : debout sans rien faire → retour au bureau (le Directeur reste en tournée pendant une mission)
     if (!a.activite && !a.travail && a.etat !== "assis" && !a.chemin.length && !(a.id === "directeur" && enMission)) rentrer(a);
   }
   const libres = Object.values(agents).filter(libre);
+  if (!enMission && !partie.jeu && performance.now() > prochainGateau && libres.length >= 5 && Math.random() < 0.03)
+    return anniversaire(libres.sort(() => Math.random() - 0.5).slice(0, AUTOUR_GATEAU.length));
   if (!enMission && performance.now() > finFete + 40000 && libres.length >= 6 && Math.random() < 0.05)
     return fete(libres.sort(() => Math.random() - 0.5).slice(0, 3 + Math.floor(Math.random() * 3)));
   if (Math.random() < 0.35) return;
   const a = hasard(libres); if (!a) return;
   const r = Math.random(), autres = libres.filter(b => b !== a);
-  if (r < 0.28 && autres.length) discussion(a, hasard(autres));
-  else if (r < 0.45) musique(a);
-  else if (r < 0.65) regarderTele(a);
-  else if (r < 0.8) snack(a);
-  else if (r < 0.9) cafe(a);
-  else sieste(a);
+  if (r < 0.2 && autres.length) discussion(a, hasard(autres));
+  else if (r < 0.28 && autres.length) partieDeJeu(a, hasard(autres));
+  else if (r < 0.35 && autres.length) pingPong(a, hasard(autres));
+  else if (r < 0.41) jouerFlechettes(a);
+  else if (r < 0.48) avionPapier(a);
+  else if (r < 0.55) musique(a);
+  else if (r < 0.66) regarderTele(a);
+  else if (r < 0.73) snack(a);
+  else if (r < 0.79) cafe(a);
+  else if (r < 0.84) sieste(a);
+  else if (r < 0.89) jongler(a);
+  else if (r < 0.95) rubik(a);
+  else arroser(a);
 }, 2500);
 // Avant l'ouverture du bureau (vérification et mises à jour) : toute l'équipe, sauf le Directeur, fait la fête.
 const GRANDE_PISTE = [...[216, 236, 256, 276, 296, 316, 336].map(x => [x, 200]), ...[226, 246, 266, 286, 306, 326].map(x => [x, 214])];
@@ -813,21 +1018,23 @@ function traiter(ev, anime = true) {
   } else if (ev.type === "order") {
     noter(`${tag("directeur")} → ${tag(ev.agent)} ${esc(ev.text)}`, "dir");
     if (anime) faire(async () => {
-      await visiter(dir, a); dire(dir, ev.text, "dir", 3500); await pause(1300);
-      dire(a, "Compris, chef !", "", 2000); await pause(700);
+      // le Directeur reste à son bureau : les ordres passent par le micro-casque
+      if (dir.etat !== "assis" && !dir.chemin.length) { await rentrer(dir); dir.etat = "assis"; }
+      dir.radio = true; dire(dir, ev.text, "dir", 3500); await pause(1300); dir.radio = false;
+      a.radio = true; dire(a, "Compris, chef !", "", 2000); await pause(700); a.radio = false;
     });
   } else if (ev.type === "step") {
     if (ev.status === "start") {
       a.sortie = [`$ ${ev.cmd}`];
       if (anime) {
         if (a.activite) arreter(a);
-        rentrer(a).then(() => { a.etat = "assis"; }); a.travail = true; a.statut = null;
+        rentrer(a).then(() => { a.etat = "assis"; }); a.travail = true; a.statut = null; a.debutTravail = performance.now(); a.dort = false;
         setTimeout(() => a.travail && dire(a, hasard(TRAVAIL[a.id]), "", 2500), 2600);
       }
     } else {
-      a.travail = false; a.statut = ev.status === "done" ? "ok" : "ko";
+      a.travail = false; a.dort = false; a.statut = ev.status === "done" ? "ok" : "ko";
       noter(`${tag(ev.agent)} ${ev.status === "done" ? "✓" : "✗"} ${esc(ev.summary)}`, ev.status === "done" ? "ok" : "ko");
-      if (anime) { dire(a, ev.summary, ev.status === "done" ? "ok" : "ko", 6500); envoyerPapier(a, dir); }
+      if (anime) { dire(a, ev.summary, ev.status === "done" ? "ok" : "ko", 6500); envoyerPapier(a, dir); a.radio = true; setTimeout(() => (a.radio = false), 2500); }
     }
   } else if (ev.type === "line") {
     a.sortie.push(ev.text); if (a.sortie.length > 500) a.sortie.shift();

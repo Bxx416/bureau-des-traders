@@ -15,6 +15,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 SKILLS = ROOT / "skills"   # copie des scripts trader-* : l'app marche sans Claude Code installé
 TRADER = ROOT / "trader"
 CONFIG = TRADER / "config.json"
+CODE = __import__("hashlib").sha1(Path(__file__).read_bytes()).hexdigest()[:12]   # version du code chargé
 PORT = int(os.environ.get("BDT_PORT", 8765))   # autre port : pour tester une 2e copie à côté
 
 AGENTS = {
@@ -647,7 +648,7 @@ class Handler(SimpleHTTPRequestHandler):
                                    "maj": {**{k: v for k, v in maj.items() if k != "liste"},
                                            "liste": [x["nom"] for x in maj["liste"]]},
                                    "config": {k: load_config().get(k) for k in EDITABLE},
-                                   "alpaca": alpaca_ok()})
+                                   "alpaca": alpaca_ok(), "code": CODE})
         return super().do_GET()
 
     def do_POST(self):
@@ -705,6 +706,11 @@ class Handler(SimpleHTTPRequestHandler):
                 if str(body.get(k) or "").strip():
                     cfg[k] = str(body[k]).strip()
             CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            return self.send_json({"ok": True})
+        if self.path == "/api/redemarrer":   # un lancement plus récent demande la place
+            if busy.locked() or maj["etat"] == "maj":
+                return self.send_json({"error": "occupé"}, 409)
+            threading.Thread(target=redemarrer, daemon=True).start()
             return self.send_json({"ok": True})
         if self.path == "/api/envoyer":
             if not busy.acquire(blocking=False):
@@ -789,6 +795,15 @@ if __name__ == "__main__":
     else:
         if apres_maj:
             sys.exit(1)
+        try:   # le serveur déjà lancé a-t-il un code plus ancien ? Il passe la main (et rouvre la fenêtre)
+            with urllib.request.urlopen(url + "api/state", timeout=5) as r:
+                perime = json.loads(r.read()).get("code") != CODE
+            if perime:
+                urllib.request.urlopen(urllib.request.Request(url + "api/redemarrer", data=b"{}", method="POST"), timeout=5)
+                print("Ancien serveur remplacé par la nouvelle version.")
+                sys.exit(0)
+        except (OSError, ValueError):
+            pass   # occupé ou injoignable : on garde l'ancien comportement
         print("Le Bureau des Traders tourne déjà : j'ouvre juste la fenêtre.")
         fenetre_logiciel(url + "?app=1") if webview else open_window(url + "?app=1")
         sys.exit(0)

@@ -29,9 +29,7 @@ main { display: flex; height: calc(100% - 46px - 28px); }
 #defile span { margin-right: 34px; color: var(--doux); }
 #defile b { font-weight: normal; color: var(--texte); }
 #defile .monte { color: var(--vert); } #defile .baisse { color: var(--rouge); }
-@keyframes defile { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-@media (prefers-reduced-motion: reduce) { #defile { animation: none; } #bandeau { overflow-x: auto; scrollbar-width: none; } }  /* sans animation : défilement à la molette */
-#scene { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 12px; }
+@keyframes defile { from { transform: translateX(0); } to { transform: translateX(-50%); } }#scene { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 12px; }
 #cadre { position: relative; border: 4px solid var(--bord); box-shadow: 0 0 0 4px #0a0812; }
 canvas { display: block; image-rendering: pixelated; cursor: pointer; }
 #calque { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
